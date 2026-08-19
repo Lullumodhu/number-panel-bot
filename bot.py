@@ -196,10 +196,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 2. Click Service -> Show Countries List for that Service
     elif query.data.startswith("sel_serv:"):
         await query.answer()
-        service_name = query.data.split(":", 1)[1]
+        service_name = query.data.split(":", 1)[1].strip()
         
         async with aiosqlite.connect(DATABASE_PATH) as db:
-            async with db.execute("SELECT DISTINCT country FROM numbers WHERE service_name=? AND status='Available'", (service_name,)) as cursor:
+            async with db.execute("SELECT DISTINCT country FROM numbers WHERE TRIM(service_name)=TRIM(?) AND status='Available'", (service_name,)) as cursor:
                 countries = await cursor.fetchall()
         
         if countries:
@@ -219,22 +219,29 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
 
-    # 3. Click Country -> Show Numbers for that Service & Country (Fixed Split)
+    # 3. Click Country -> Show Numbers for that Service & Country (Fully Secured & Trimmed)
     elif query.data.startswith("sel_count:"):
         await query.answer()
-        parts = query.data.split(":")
-        service_name = parts[1]
-        country = parts[2]
+        parts = query.data.split(":", 2)
+        if len(parts) >= 3:
+            service_name = parts[1].strip()
+            country = parts[2].strip()
+        else:
+            service_name = "Unknown"
+            country = "Unknown"
         
         async with aiosqlite.connect(DATABASE_PATH) as db:
-            async with db.execute("SELECT phone_number FROM numbers WHERE service_name=? AND country=? AND status='Available'", (service_name, country)) as cursor:
+            async with db.execute(
+                "SELECT phone_number FROM numbers WHERE TRIM(service_name)=TRIM(?) AND TRIM(country)=TRIM(?) AND status='Available'", 
+                (service_name, country)
+            ) as cursor:
                 numbers = await cursor.fetchall()
         
         if numbers:
             num_list = "\n".join([f"🔹 `{row[0]}`" for row in numbers[:30]])
             text_msg = f"📱 **Available Numbers (`{service_name}` - `{country}`):**\n\n{num_list}\n\n🔗 Main Channel: {MAIN_CHANNEL_URL}"
         else:
-            text_msg = f"⚠️ `{service_name}` ({country}) এ কোনো নাম্বার এভেইলেবল নেই!"
+            text_msg = f"⚠️ `{service_name}` ({country}) এ বর্তমানে কোনো নাম্বার এভেইলেবল নেই!"
             
         reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Countries", callback_data=f"sel_serv:{service_name}")]])
         
@@ -351,7 +358,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-    # --- Handle Document (.txt file) Upload in Step 3 (Fixed Broadcast) ---
+    # --- Handle Document (.txt file) Upload in Step 3 ---
     if user_id == OWNER_ID and update.message.document and user_id in ADMIN_UPLOAD_STATE:
         state_data = ADMIN_UPLOAD_STATE[user_id]
         if state_data.get("step") == "GET_NUMBERS":
@@ -454,7 +461,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"👥 **Referral System**\n\n"
             f"আপনার রেফাল লিংকটি বন্ধুদের সাথে শেয়ার করুন:\n`{ref_link}`",
-            parse_Mode="Markdown",
+            parse_mode="Markdown",
             reply_markup=main_menu_keyboard(user_id)
         )
         
