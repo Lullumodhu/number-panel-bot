@@ -57,7 +57,7 @@ async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
             
     return True
 
-# --- Broadcast Function to All Users (Fixed to reach everyone safely) ---
+# --- Broadcast Function to All Users (Fixed) ---
 async def send_broadcast_to_all(context: ContextTypes.DEFAULT_TYPE, message_text: str, keyboard=None):
     async with aiosqlite.connect(DATABASE_PATH) as db:
         async with db.execute("SELECT user_id FROM users") as cursor:
@@ -72,7 +72,6 @@ async def send_broadcast_to_all(context: ContextTypes.DEFAULT_TYPE, message_text
                 parse_mode="Markdown", 
                 reply_markup=keyboard
             )
-            # ছোট বিরতি যাতে টেলিগ্রাম API ফ্লাড বা লিমিট না ধরে
             await asyncio.sleep(0.05)
         except Exception as e:
             logging.info(f"Could not send message to {user_id}: {e}")
@@ -88,7 +87,6 @@ def main_menu_keyboard(user_id: int):
         keyboard.append([KeyboardButton("👑 ADMIN PANEL")])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# বারবার Main Menu তে যাওয়ার বিরক্তি দূর করার জন্য Close বাটন
 def close_keyboard():
     return ReplyKeyboardMarkup([[KeyboardButton("❌ Close")]], resize_keyboard=True)
 
@@ -162,17 +160,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await context.bot.send_message(chat_id=user_id, text=welcome_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
         else:
-            await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন.", show_alert=True)
+            await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন।", show_alert=True)
 
-    # ব্রডকাস্টের Get Number বাটনে ক্লিক করলে স্টক দেখানোর ব্যবস্থা
-    elif query.data == "get_numbers_stock":
+    elif query.data == "get_stock_click":
         await query.answer()
         async with aiosqlite.connect(DATABASE_PATH) as db:
             async with db.execute("SELECT service_name, country, phone_number FROM numbers WHERE status='Available'") as cursor:
                 numbers = await cursor.fetchall()
         
         if numbers:
-            num_list = "\n".join([f"🔹 *{row[0]}* ({row[1]}: `{row[2]}`" for row in numbers[:30]])
+            num_list = "\n".join([f"🔹 *{row[0]}* ({row[1]}): `{row[2]}`" for row in numbers[:30]])
             response_text = f"📱 **Available Numbers (Stock):**\n\n{num_list}\n\n🔗 Main Channel: {MAIN_CHANNEL_URL}\n💬 OTP Group: {OTP_GROUP_URL}"
         else:
             response_text = (
@@ -272,14 +269,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
             del ADMIN_UPLOAD_STATE[user_id]
             
-            # Broadcast Notification to All Users in Bot (Using callback_data so it works instantly)
+            # Broadcast Notification with working callback button
             broadcast_notification = (
                 f"🆕 **New Stock Added** 🔵\n\n"
                 f"🌍 `{country}` | 📱 `{service_name}`\n"
                 f"📦 **TOTALL :** `{len(numbers_list)}` Numbers\n"
                 f"💵 **OTP Price :** `0.0$`"
             )
-            keyboard_broadcast = InlineKeyboardMarkup([[InlineKeyboardButton("📞 Get Number", callback_data="get_numbers_stock")]])
+            keyboard_broadcast = InlineKeyboardMarkup([[InlineKeyboardButton("📞 Get Number", callback_data="get_stock_click")]])
             
             await send_broadcast_to_all(context, broadcast_notification, keyboard_broadcast)
 
@@ -329,14 +326,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
             del ADMIN_UPLOAD_STATE[user_id]
             
-            # Broadcast Notification to All Users in Bot (Using callback_data)
+            # Broadcast Notification with working callback button
             broadcast_notification = (
                 f"🆕 **New Stock Added** 🔵\n\n"
                 f"🌍 `{country}` | 📱 `{service_name}`\n"
                 f"📦 **TOTALL :** `{len(numbers_list)}` Numbers\n"
                 f"💵 **OTP Price :** `0.0$`"
             )
-            keyboard_broadcast = InlineKeyboardMarkup([[InlineKeyboardButton("📞 Get Number", callback_data="get_numbers_stock")]])
+            keyboard_broadcast = InlineKeyboardMarkup([[InlineKeyboardButton("📞 Get Number", callback_data="get_stock_click")]])
             
             await send_broadcast_to_all(context, broadcast_notification, keyboard_broadcast)
 
@@ -435,7 +432,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     elif text == "⚙️ Number Management" and user_id == OWNER_ID:
-        # Step 1 Start: Ask for Service Name
         ADMIN_UPLOAD_STATE[user_id] = {"step": "GET_SERVICE"}
         await update.message.reply_text(
             "⚙️ **Number Management (Step 1/3)**\n\n"
@@ -459,7 +455,6 @@ async def main():
     await init_db()
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Menu Button setup
     await application.bot.set_my_commands([BotCommand("start", "Start the bot")])
 
     application.add_handler(CommandHandler("start", start))
