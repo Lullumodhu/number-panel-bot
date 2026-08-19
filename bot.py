@@ -57,6 +57,24 @@ async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
             
     return True
 
+# --- Broadcast Function to All Users ---
+async def send_broadcast_to_all(context: ContextTypes.DEFAULT_TYPE, message_text: str, keyboard=None):
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        async with db.execute("SELECT user_id FROM users") as cursor:
+            users = await cursor.fetchall()
+            
+    for user_row in users:
+        user_id = user_row[0]
+        try:
+            await context.bot.send_message(
+                chat_id=user_id, 
+                text=message_text, 
+                parse_mode="Markdown", 
+                reply_markup=keyboard
+            )
+        except Exception as e:
+            logging.info(f"Could not send message to {user_id}: {e}")
+
 # --- Reply Keyboards ---
 def main_menu_keyboard(user_id: int):
     keyboard = [
@@ -217,8 +235,20 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await db.commit()
                 
             del ADMIN_UPLOAD_STATE[user_id]
+            
+            # Broadcast Notification to All Users in Bot
+            broadcast_notification = (
+                f"🆕 **New Stock Added** 🔵\n\n"
+                f"🌍 `{country}` | 📱 `{service_name}`\n"
+                f"📦 **TOTALL :** `{len(numbers_list)}` Numbers\n"
+                f"💵 **OTP Price :** `0.0$`"
+            )
+            keyboard_broadcast = InlineKeyboardMarkup([[InlineKeyboardButton("📞 Get Number", url=f"https://t.me/{context.bot.username}")]])
+            
+            await send_broadcast_to_all(context, broadcast_notification, keyboard_broadcast)
+
             await update.message.reply_text(
-                f"🎉 সফলভাবে **{len(numbers_list)}টি** নাম্বার স্টক এ যুক্ত করা হয়েছে!\n\n"
+                f"🎉 সফলভাবে **{len(numbers_list)}টি** নাম্বার স্টক এ যুক্ত করা হয়েছে এবং সকল ইউজারের কাছে নোটিফিকেশন পাঠানো হয়েছে!\n\n"
                 f"🔹 সার্ভিস: `{service_name}`\n"
                 f"🌍 কান্ট্রি: `{country}`",
                 parse_mode="Markdown",
@@ -262,8 +292,20 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await db.commit()
                 
             del ADMIN_UPLOAD_STATE[user_id]
+            
+            # Broadcast Notification to All Users in Bot
+            broadcast_notification = (
+                f"🆕 **New Stock Added** 🔵\n\n"
+                f"🌍 `{country}` | 📱 `{service_name}`\n"
+                f"📦 **TOTALL :** `{len(numbers_list)}` Numbers\n"
+                f"💵 **OTP Price :** `0.0$`"
+            )
+            keyboard_broadcast = InlineKeyboardMarkup([[InlineKeyboardButton("📞 Get Number", url=f"https://t.me/{context.bot.username}")]])
+            
+            await send_broadcast_to_all(context, broadcast_notification, keyboard_broadcast)
+
             await update.message.reply_text(
-                f"🎉 ফাইল থেকে সফলভাবে **{len(numbers_list)}টি** নাম্বার স্টক এ যুক্ত করা হয়েছে!\n\n"
+                f"🎉 ফাইল থেকে সফলভাবে **{len(numbers_list)}টি** নাম্বার স্টক এ যুক্ত করা হয়েছে এবং সকল ইউজারের কাছে নোটিফিকেশন পাঠানো হয়েছে!\n\n"
                 f"🔹 সার্ভিস: `{service_name}`\n"
                 f"🌍 কান্ট্রি: `{country}`",
                 parse_mode="Markdown",
@@ -282,7 +324,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 numbers = await cursor.fetchall()
         
         if numbers:
-            num_list = "\n".join([f"🔹 *{row[0]}* ({row[1]}): `{row[2]}`" for row in numbers[:20]])
+            num_list = "\n".join([f"🔹 *{row[0]}* ({row[1]}): `{row[2]}`" for row in numbers[:30]])
             response_text = f"📱 **Available Numbers (Stock):**\n\n{num_list}\n\n🔗 Main Channel: {MAIN_CHANNEL_URL}\n💬 OTP Group: {OTP_GROUP_URL}"
         else:
             response_text = (
@@ -313,7 +355,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"👥 **Referral System**\n\n"
             f"আপনার রেফাল লিংকটি বন্ধুদের সাথে শেয়ার করুন:\n`{ref_link}`",
-            parse_mode="Markdown",
+            parse_Mode="Markdown",
             reply_markup=back_menu_keyboard()
         )
         
