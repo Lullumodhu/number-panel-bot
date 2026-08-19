@@ -1,8 +1,8 @@
 import os
 import logging
 import aiosqlite
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 # Logging setup
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -46,24 +46,27 @@ async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
             pass
     return True
 
-# --- Keyboards ---
+# --- Reply Keyboards (Chat Box Keyboard) ---
 def main_menu_keyboard(user_id: int):
     keyboard = [
-        [InlineKeyboardButton("📱 GET NUMBER", callback_data="get_number"), InlineKeyboardButton("🔎 SEARCH NUMBER", callback_data="search_number")],
-        [InlineKeyboardButton("🚦 TRAFFIC", callback_data="traffic"), InlineKeyboardButton("👥 REFERRAL", callback_data="referral")],
-        [InlineKeyboardButton("💸 WITHDRAW", callback_data="withdraw"), InlineKeyboardButton("🆘 SUPPORT", callback_data="support")]
+        [KeyboardButton("📱 GET NUMBER"), KeyboardButton("🔎 SEARCH NUMBER")],
+        [KeyboardButton("🚦 TRAFFIC"), KeyboardButton("👥 REFERRAL")],
+        [KeyboardButton("💸 WITHDRAW"), KeyboardButton("🆘 SUPPORT")]
     ]
     if user_id == OWNER_ID:
-        keyboard.append([InlineKeyboardButton("👑 ADMIN PANEL", callback_data="admin_panel")])
-    return InlineKeyboardMarkup(keyboard)
+        keyboard.append([KeyboardButton("👑 ADMIN PANEL")])
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def back_menu_keyboard():
+    return ReplyKeyboardMarkup([[KeyboardButton("🏠 Main Menu")]], resize_keyboard=True)
 
 def admin_panel_keyboard():
     keyboard = [
-        [InlineKeyboardButton("📊 Overview", callback_data="admin_overview"), InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")],
-        [InlineKeyboardButton("⚙️ Number Management", callback_data="admin_numbers"), InlineKeyboardButton("👥 User Management", callback_data="admin_users")],
-        [InlineKeyboardButton("🔗 Force Join Setup", callback_data="admin_forcejoin"), InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")]
+        [KeyboardButton("📊 Overview"), KeyboardButton("📢 Broadcast")],
+        [KeyboardButton("⚙️ Number Management"), KeyboardButton("👥 User Management")],
+        [KeyboardButton("🔗 Force Join Setup"), KeyboardButton("🏠 Main Menu")]
     ]
-    return InlineKeyboardMarkup(keyboard)
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 # --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -75,6 +78,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Check Force Join
     is_joined = await check_force_join(user.id, context)
     if not is_joined:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         keyboard = [[InlineKeyboardButton("📢 Join Channel", url="https://t.me/YourChannelName")],
                     [InlineKeyboardButton("✅ Joined / Check", callback_data="check_join")]]
         await update.message.reply_text("⚠️ Please join our update channel first to use this bot!", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -91,67 +95,53 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user.id))
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    data = query.data
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    user_id = update.effective_user.id
 
-    if data == "main_menu":
-        await query.message.edit_text("🏠 **Main Menu:**", parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
+    if text in ["🏠 Main Menu", "/start"]:
+        await start(update, context)
     
-    elif data == "get_number":
-        await query.message.edit_text("📱 **Get Number Menu**\nSelect your service below:", parse_mode="Markdown",
-                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]))
+    elif text == "📱 GET NUMBER":
+        await update.message.reply_text("📱 **Get Number Menu**\nSelect your service below:", parse_mode="Markdown", reply_markup=back_menu_keyboard())
     
-    elif data == "search_number":
-        await query.message.edit_text("🔎 Send the number or country code you want to search.",
-                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]))
+    elif text == "🔎 SEARCH NUMBER":
+        await update.message.reply_text("🔎 Send the number or country code you want to search.", reply_markup=back_menu_keyboard())
     
-    elif data == "traffic":
-        await query.message.edit_text("🚦 Traffic & Status overview.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]))
+    elif text == "🚦 TRAFFIC":
+        await update.message.reply_text("🚦 Traffic & Status overview.", reply_markup=back_menu_keyboard())
     
-    elif data == "referral":
+    elif text == "👥 REFERRAL":
         bot_username = context.bot.username
         ref_link = f"https://t.me/{bot_username}?start={user_id}"
-        await query.message.edit_text(f"👥 **Referral System**\n\nShare this link to earn:\n`{ref_link}`", parse_mode="Markdown",
-                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]))
+        await update.message.reply_text(f"👥 **Referral System**\n\nShare this link to earn:\n`{ref_link}`", parse_mode="Markdown", reply_markup=back_menu_keyboard())
     
-    elif data == "withdraw":
-        await query.message.edit_text("💸 Your current balance is insufficient for withdrawal.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]))
+    elif text == "💸 WITHDRAW":
+        await update.message.reply_text("💸 Your current balance is insufficient for withdrawal.", reply_markup=back_menu_keyboard())
     
-    elif data == "support":
-        await query.message.edit_text("🆘 For any support, contact admin directly.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]))
+    elif text == "🆘 SUPPORT":
+        await update.message.reply_text("🆘 For any support, contact admin directly.", reply_markup=back_menu_keyboard())
 
-    elif data == "admin_panel" and user_id == OWNER_ID:
-        await query.message.edit_text("👑 **Admin Control Panel**", parse_mode="Markdown", reply_markup=admin_panel_keyboard())
+    elif text == "👑 ADMIN PANEL" and user_id == OWNER_ID:
+        await update.message.reply_text("👑 **Admin Control Panel**", parse_mode="Markdown", reply_markup=admin_panel_keyboard())
     
-    elif data == "admin_overview" and user_id == OWNER_ID:
+    elif text == "📊 Overview" and user_id == OWNER_ID:
         async with aiosqlite.connect(DATABASE_PATH) as db:
             async with db.execute("SELECT COUNT(*) FROM users") as cursor:
                 total_users = (await cursor.fetchone())[0]
-        await query.message.edit_text(f"📊 **Database Overview**\n\nTotal Users: `{total_users}`", parse_mode="Markdown",
-                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]]))
-
-    elif data == "check_join":
-        is_joined = await check_force_join(user_id, context)
-        if is_joined:
-            await query.message.delete()
-            await start(update, context)
-        else:
-            await query.answer("❌ You have not joined the channel yet!", show_alert=True)
+        await update.message.reply_text(f"📊 **Database Overview**\n\nTotal Users: `{total_users}`", parse_mode="Markdown", reply_markup=admin_panel_keyboard())
 
 async def main():
     await init_db()
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Set Menu Button (/start command)
+    # Set Menu Button (/start command) in the left 3-lines menu
     await application.bot.set_my_commands([
         BotCommand("start", "Start the bot & Open Menu")
     ])
 
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
     print("Bot is running...")
     
