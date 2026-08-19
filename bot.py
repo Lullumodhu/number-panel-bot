@@ -2,7 +2,7 @@ import os
 import logging
 import aiosqlite
 import asyncio
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 # Logging setup
@@ -12,11 +12,29 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_PATH = os.getenv("DATABASE_PATH", "bot.db")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
+# --- Permanent Links & Info ---
+MAIN_CHANNEL = "https://t.me/Zentrix_Officiall"
+UPDATE_CHANNEL_URL = "https://t.me/Zentrix_Update"
+UPDATE_CHANNEL_USERNAME = "@Zentrix_Update"  # Force join check-এর জন্য
+OTP_GROUP = "https://t.me/+pBpZWtQC4qswODI1"
+SUPPORT_ADMIN = "@ranaXvou"
+
 # --- Database ---
 async def init_db():
     async with aiosqlite.connect(DATABASE_PATH) as db:
         await db.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT)")
         await db.commit()
+
+# --- Force Join Check Function ---
+async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    try:
+        member = await context.bot.get_chat_member(chat_id=UPDATE_CHANNEL_USERNAME, user_id=user_id)
+        if member.status in ['left', 'kicked']:
+            return False
+    except Exception:
+        # যদি বট চ্যানেলে ایڈমিন না থাকে বা অন্য কোনো এরর হয়, তবে সাময়িকভাবে পাস করিয়ে দিতে পারে অথবা ফলস রিটার্ন করতে পারে
+        pass
+    return True
 
 # --- Reply Keyboards ---
 def main_menu_keyboard(user_id: int):
@@ -43,6 +61,23 @@ def admin_panel_keyboard():
 # --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    
+    # Force Join Check
+    is_joined = await check_force_join(user.id, context)
+    if not is_joined:
+        keyboard = [
+            [InlineKeyboardButton("📢 Join Update Channel", url=UPDATE_CHANNEL_URL)],
+            [InlineKeyboardButton("✅ Joined / Check", callback_data="check_join")]
+        ]
+        # যেহেতু এটি Reply Keyboard বট, তাই Force Join-এর জন্য সাময়িকভাবে ইনলাইন মেসেজ পাঠানো হচ্ছে
+        await update.message.reply_text(
+            "⚠️ **বটটি ব্যবহার করতে হলে অবশ্যই আমাদের আপডেট চ্যানেলে জয়েন করতে হবে!**\n\n"
+            "দয়া করে নিচের লিংকে ক্লিক করে জয়েন করুন এবং তারপর 'Joined / Check' বাটনে চাপুন।",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
     async with aiosqlite.connect(DATABASE_PATH) as db:
         await db.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user.id, user.username))
         await db.commit()
@@ -58,6 +93,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user.id))
 
+# Inline Callback Handler for Force Join Check Button
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    if query.data == "check_join":
+        is_joined = await check_force_join(user_id, context)
+        if is_joined:
+            await query.message.delete()
+            # ইউজার জয়েন করলে স্টার্ট মেসেজ দেখাবে
+            user = query.from_user
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                await db.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user.id, user.username))
+                await db.commit()
+            
+            welcome_text = (
+                f"🌐 **NUMBER PANEL**\n\n"
+                f"👋 Welcome, **{user.first_name}**\n"
+                f"🚀 Premium Number Management System\n\n"
+                f"⚡ Fast • Simple • Secure"
+            )
+            await context.bot.send_message(chat_id=user_id, text=welcome_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
+        else:
+            await query.answer("❌ আপনি এখনো আপডেট চ্যানেলে জয়েন করেননি!", show_alert=True)
+
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = update.effective_user.id
@@ -67,9 +128,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif text == "📱 GET NUMBER":
         await update.message.reply_text(
-            "📱 **Get Number Menu**\n\n"
-            "আমাদের সিস্টেমে বর্তমানে বিভিন্ন দেশের নাম্বার এভেইলেবল আছে।\n"
-            "সার্ভিস সিলেক্ট করার অপশন খুব শীঘ্রই যুক্ত করা হচ্ছে।",
+            f"📱 **Get Number Menu**\n\n"
+            f"🔗 Main Channel: {MAIN_CHANNEL}\n"
+            f"💬 OTP Group: {OTP_GROUP}\n\n"
+            f"সার্ভিস থেকে নাম্বার নিতে উপরোক্ত গ্রুপ ও চ্যানেল ফলো করুন।",
             parse_mode="Markdown",
             reply_markup=back_menu_keyboard()
         )
@@ -82,7 +144,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif text == "🚦 TRAFFIC":
         await update.message.reply_text(
-            "🚦 সিস্টেমের বর্তমান ট্রাফিক ও স্ট্যাটাস স্বাভাবিক আছে।",
+            f"🚦 সিস্টেমের বর্তমান ট্রাফিক স্বাভাবিক আছে।\n\nঅফিশিয়াল আপডেট পেতে ভিজিট করুন: {UPDATE_CHANNEL_URL}",
+            parse_mode="Markdown",
             reply_markup=back_menu_keyboard()
         )
         
@@ -104,7 +167,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif text == "🆘 SUPPORT":
         await update.message.reply_text(
-            "🆘 কোনো সমস্যায় পড়লে সরাসরি এডমিনের সাথে যোগাযোগ করুন।",
+            f"🆘 কোনো সমস্যায় পড়লে সরাসরি এডমিনের সাথে যোগাযোগ করুন:\n\n"
+            f"👤 Support Admin: {SUPPORT_ADMIN}\n"
+            f"💬 OTP Discussion Group: {OTP_GROUP}",
+            parse_mode="Markdown",
             reply_markup=back_menu_keyboard()
         )
         
@@ -142,7 +208,9 @@ async def main():
     # Menu Button setup
     await application.bot.set_my_commands([BotCommand("start", "Start the bot")])
 
+    from telegram.ext import CallbackQueryHandler
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(callback_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
     print("Bot is running...")
