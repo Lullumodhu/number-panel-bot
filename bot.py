@@ -1,8 +1,8 @@
 import os
 import logging
 import aiosqlite
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 # Logging setup
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -43,7 +43,6 @@ async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
             if member.status in ['left', 'kicked']:
                 return False
         except Exception:
-            # If bot is not admin or channel is invalid, skip or handle
             pass
     return True
 
@@ -99,7 +98,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data == "main_menu":
-        await query.message.edit_text("🏠 Main Menu:", reply_markup=main_menu_keyboard(user_id))
+        await query.message.edit_text("🏠 **Main Menu:**", parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
     
     elif data == "get_number":
         await query.message.edit_text("📱 **Get Number Menu**\nSelect your service below:", parse_mode="Markdown",
@@ -146,28 +145,21 @@ async def main():
     await init_db()
     application = Application.builder().token(BOT_TOKEN).build()
 
+    # Set Menu Button (/start command)
+    await application.bot.set_my_commands([
+        BotCommand("start", "Start the bot & Open Menu")
+    ])
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_handler))
 
     print("Bot is running...")
-    await application.run_polling()
-
-if __name__ == "__main__":
-    import asyncio
     
     async def main_runner():
-        await init_db()
-        application = Application.builder().token(BOT_TOKEN).build()
-
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CallbackQueryHandler(button_handler))
-
-        print("Bot is running...")
         await application.initialize()
         await application.start()
         await application.updater.start_polling()
         
-        # Keep the bot running
         stop_signal = asyncio.Event()
         try:
             await stop_signal.wait()
@@ -176,8 +168,12 @@ if __name__ == "__main__":
             await application.stop()
             await application.shutdown()
 
+    import asyncio
     try:
-        asyncio.run(main_runner())
+        await main_runner()
     except (KeyboardInterrupt, RuntimeError):
         pass
 
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
