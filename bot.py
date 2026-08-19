@@ -22,7 +22,7 @@ UPDATE_CHANNEL_ID = "@Zentrix_Update"
 OTP_GROUP_URL = "https://t.me/+pBpZWtQC4qswODI1"
 SUPPORT_ADMIN = "@ranaXvou"
 
-# Temporary dictionary to track admin state for uploading numbers
+# Temporary dictionary to track admin state for multi-step uploading
 ADMIN_UPLOAD_STATE = {}
 
 # --- Database Setup ---
@@ -143,8 +143,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন।", show_alert=True)
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
     user_id = update.effective_user.id
+    text = update.message.text if update.message.text else ""
 
     is_joined = await check_force_join(user_id, context)
     if not is_joined and text != "/start" and text != "🏠 Main Menu":
@@ -160,37 +160,52 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Check if Admin is in the middle of uploading numbers via text/file
+    # --- Step-by-Step Admin Upload Flow ---
     if user_id == OWNER_ID and user_id in ADMIN_UPLOAD_STATE:
-        state = ADMIN_UPLOAD_STATE[user_id]
-        
-        if state == "WAITING_FOR_DETAILS":
-            # Expected format: ServiceName | CountryName
-            parts = text.split("|")
-            if len(parts) < 2:
-                await update.message.reply_text("❌ সঠিক ফরম্যাটে দিন!\nব্যবহার: `Service Name | Country`\nউদাহরণ: `Telegram | USA`", parse_mode="Markdown")
+        state_data = ADMIN_UPLOAD_STATE[user_id]
+        current_step = state_data.get("step")
+
+        # Step 1: Receiving Service Name -> Moving to Country Prompt
+        if current_step == "GET_SERVICE":
+            service_name = text.strip()
+            if not service_name:
+                await update.message.reply_text("❌ সার্ভিসের নাম খালি রাখা যাবে না। সঠিক নাম লিখে পাঠান:")
                 return
             
-            service_name = parts[0].strip()
-            country = parts[1].strip()
-            
-            ADMIN_UPLOAD_STATE[user_id] = {"state": "WAITING_FOR_NUMBERS", "service": service_name, "country": country}
+            ADMIN_UPLOAD_STATE[user_id] = {"step": "GET_COUNTRY", "service": service_name}
             await update.message.reply_text(
-                f"✅ সার্ভিস: `{service_name}` এবং কান্ট্রি: `{country}` সেট হয়েছে।\n\n"
-                "اب আপনি একসাথে যতখুশি **নম্বরগুলো পেস্ট করুন** (প্রতি লাইনে একটি করে নাম্বার) অথবা একটি `.txt` ফাইল আপলোড করুন।",
-                parse_mode="Markdown"
+                f"✅ সার্ভিস সিলেক্ট হয়েছে: `{service_name}`\n\n"
+                "🌍 এখন কান্ট্রির নাম বা কোড লিখে পাঠান (যেমন: `USA` বা `Bangladesh`):",
+                parse_mode="Markdown",
+                reply_markup=back_menu_keyboard()
             )
             return
+
+        # Step 2: Receiving Country Name -> Moving to File/Numbers Prompt
+        elif current_step == "GET_COUNTRY":
+            country = text.strip()
+            if not country:
+                await update.message.reply_text("❌ কান্ট্রির নাম খালি রাখা যাবে না। সঠিক নাম লিখে পাঠান:")
+                return
             
-        elif isinstance(state, dict) and state.get("state") == "WAITING_FOR_NUMBERS":
-            service_name = state["service"]
-            country = state["country"]
+            service_name = state_data["service"]
+            ADMIN_UPLOAD_STATE[user_id] = {"step": "GET_NUMBERS", "service": service_name, "country": country}
+            await update.message.reply_text(
+                f"✅ সার্ভিস: `{service_name}` | কান্ট্রি: `{country}`\n\n"
+                "📂 এখন আপনার `.txt` ফাইলটি আপলোড করুন অথবা একসাথে নাম্বারগুলো কপি করে চ্যাটে পেস্ট করে দিন:",
+                parse_mode="Markdown",
+                reply_markup=back_menu_keyboard()
+            )
+            return
+
+        # Step 3: Receiving Numbers via Text
+        elif current_step == "GET_NUMBERS" and text:
+            service_name = state_data["service"]
+            country = state_data["country"]
             
-            # Process text lines of numbers
             numbers_list = [line.strip() for line in text.split("\n") if line.strip()]
-            
             if not numbers_list:
-                await update.message.reply_text("❌ কোনো নাম্বার পাওয়া যায়নি। দয়া করে সঠিক লাইনে নাম্বারগুলো পেস্ট করুন।")
+                await update.message.reply_text("❌ কোনো নাম্বার পাওয়া যায়নি। সঠিক লাইনে নাম্বারগুলো পেস্ট করুন বা ফাইল দিন।")
                 return
                 
             async with aiosqlite.connect(DATABASE_PATH) as db:
@@ -211,26 +226,29 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-    # Document / File Upload Handler for Bulk Numbers
+    # Handle Document (.txt file) Upload in Step 3
     if user_id == OWNER_ID and update.message.document and user_id in ADMIN_UPLOAD_STATE:
-        state = ADMIN_UPLOAD_STATE[user_id]
-        if isinstance(state, dict) and state.get("state") == "WAITING_FOR_NUMBERS":
-            service_name = state["service"]
-            country = state["country"]
+        state_data = ADMIN_UPLOAD_STATE[user_id]
+        if state_data.get("step") == "GET_NUMBERS":
+            service_name = state_data["service"]
+            country = state_data["country"]
             
             doc = update.message.document
             file = await context.bot.get_file(doc.file_id)
-            file_path = "temp_numbers.txt"
+            file_path = f"temp_{user_id}.txt"
             await file.download_to_drive(file_path)
             
-            with open(file_path, "r", encoding="utf-8") as f:
-                content = f.read()
-                
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+            except Exception:
+                with open(file_path, "r", encoding="latin-1") as f:
+                    content = f.read()
+                    
             if os.path.exists(file_path):
                 os.remove(file_path)
                 
             numbers_list = [line.strip() for line in content.split("\n") if line.strip()]
-            
             if not numbers_list:
                 await update.message.reply_text("❌ ফাইলটি খালি রয়েছে বা সঠিক ফরম্যাটে নেই।")
                 return
@@ -254,7 +272,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     if text == "/start" or text == "🏠 Main Menu":
-        # Clear any pending upload state
         if user_id in ADMIN_UPLOAD_STATE:
             del ADMIN_UPLOAD_STATE[user_id]
         await start(update, context)
@@ -265,7 +282,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 numbers = await cursor.fetchall()
         
         if numbers:
-            num_list = "\n".join([f"🔹 *{row[0]}* ({row[1]}): `{row[2]}`" for row in numbers[:20]]) # বেশি হলে প্রথম ২০টি দেখাবে
+            num_list = "\n".join([f"🔹 *{row[0]}* ({row[1]}): `{row[2]}`" for row in numbers[:20]])
             response_text = f"📱 **Available Numbers (Stock):**\n\n{num_list}\n\n🔗 Main Channel: {MAIN_CHANNEL_URL}\n💬 OTP Group: {OTP_GROUP_URL}"
         else:
             response_text = (
@@ -340,13 +357,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     elif text == "⚙️ Number Management" and user_id == OWNER_ID:
-        # Bulk Upload Process Start
-        ADMIN_UPLOAD_STATE[user_id] = "WAITING_FOR_DETAILS"
+        # Step 1 Start: Ask for Service Name
+        ADMIN_UPLOAD_STATE[user_id] = {"step": "GET_SERVICE"}
         await update.message.reply_text(
-            "⚙️ **Bulk Number Upload System**\n\n"
-            "প্রথমে কোন সার্ভিসের জন্য এবং কোন দেশের নাম্বার আপলোড করবেন তা এই ফরম্যাটে লিখে পাঠান:\n\n"
-            "`Service Name | Country`\n\n"
-            "উদাহরণ:\n`Telegram | USA`\n`WhatsApp | India`",
+            "⚙️ **Number Management (Step 1/3)**\n\n"
+            "প্রথমে কোন সার্ভিসের জন্য নাম্বার আপলোড করবেন তার নাম লিখে পাঠান (যেমন: `Telegram` বা `WhatsApp`):",
             parse_mode="Markdown",
             reply_markup=back_menu_keyboard()
         )
@@ -359,7 +374,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     else:
-        await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন।")
+        if not update.message.document:
+            await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন।")
 
 async def main():
     await init_db()
@@ -371,7 +387,6 @@ async def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(callback_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-    # Document handler for file uploads
     application.add_handler(MessageHandler(filters.Document.ALL, message_handler))
 
     print("Bot is running...")
