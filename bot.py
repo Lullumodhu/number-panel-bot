@@ -29,6 +29,17 @@ def main_menu_keyboard(user_id: int):
         keyboard.append([KeyboardButton("👑 ADMIN PANEL")])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
+def back_menu_keyboard():
+    return ReplyKeyboardMarkup([[KeyboardButton("🏠 Main Menu")]], resize_keyboard=True)
+
+def admin_panel_keyboard():
+    keyboard = [
+        [KeyboardButton("📊 Overview"), KeyboardButton("📢 Broadcast")],
+        [KeyboardButton("⚙️ Number Management"), KeyboardButton("👥 User Management")],
+        [KeyboardButton("🏠 Main Menu")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
 # --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -49,10 +60,80 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
+    user_id = update.effective_user.id
+
     if text == "/start" or text == "🏠 Main Menu":
         await start(update, context)
+        
+    elif text == "📱 GET NUMBER":
+        await update.message.reply_text(
+            "📱 **Get Number Menu**\n\n"
+            "আমাদের সিস্টেমে বর্তমানে বিভিন্ন দেশের নাম্বার এভেইলেবল আছে।\n"
+            "সার্ভিস সিলেক্ট করার অপশন খুব শীঘ্রই যুক্ত করা হচ্ছে।",
+            parse_mode="Markdown",
+            reply_markup=back_menu_keyboard()
+        )
+        
+    elif text == "🔎 SEARCH NUMBER":
+        await update.message.reply_text(
+            "🔎 আপনি যে নাম্বার বা কান্ট্রি কোড খুঁজতে চান তা লিখে পাঠান:",
+            reply_markup=back_menu_keyboard()
+        )
+        
+    elif text == "🚦 TRAFFIC":
+        await update.message.reply_text(
+            "🚦 সিস্টেমের বর্তমান ট্রাফিক ও স্ট্যাটাস স্বাভাবিক আছে।",
+            reply_markup=back_menu_keyboard()
+        )
+        
+    elif text == "👥 REFERRAL":
+        bot_username = context.bot.username
+        ref_link = f"https://t.me/{bot_username}?start={user_id}"
+        await update.message.reply_text(
+            f"👥 **Referral System**\n\n"
+            f"আপনার রেফাল লিংকটি বন্ধুদের সাথে শেয়ার করুন:\n`{ref_link}`",
+            parse_mode="Markdown",
+            reply_markup=back_menu_keyboard()
+        )
+        
+    elif text == "💸 WITHDRAW":
+        await update.message.reply_text(
+            "💸 আপনার বর্তমান ব্যালেন্স অপর্যাপ্ত। উইথড্র করতে মিনিমাম ব্যালেন্স প্রয়োজন।",
+            reply_markup=back_menu_keyboard()
+        )
+        
+    elif text == "🆘 SUPPORT":
+        await update.message.reply_text(
+            "🆘 কোনো সমস্যায় পড়লে সরাসরি এডমিনের সাথে যোগাযোগ করুন।",
+            reply_markup=back_menu_keyboard()
+        )
+        
+    elif text == "👑 ADMIN PANEL" and user_id == OWNER_ID:
+        await update.message.reply_text(
+            "👑 **Admin Control Panel**\nনিচের অপশনগুলো থেকে ম্যানেজ করুন:",
+            parse_mode="Markdown",
+            reply_markup=admin_panel_keyboard()
+        )
+        
+    elif text == "📊 Overview" and user_id == OWNER_ID:
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            async with db.execute("SELECT COUNT(*) FROM users") as cursor:
+                total_users = (await cursor.fetchone())[0]
+        await update.message.reply_text(
+            f"📊 **Database Overview**\n\nTotal Registered Users: `{total_users}`",
+            parse_mode="Markdown",
+            reply_markup=admin_panel_keyboard()
+        )
+        
+    elif text in ["📢 Broadcast", "⚙️ Number Management", "👥 User Management"] and user_id == OWNER_ID:
+        await update.message.reply_text(
+            f"⚙️ `{text}` ফিচারটি ডেভেলপমেন্ট পর্যায়ে রয়েছে।",
+            parse_mode="Markdown",
+            reply_markup=admin_panel_keyboard()
+        )
+        
     else:
-        await update.message.reply_text(f"You pressed: {text}")
+        await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন।")
 
 async def main():
     await init_db()
