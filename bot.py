@@ -165,29 +165,77 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন।", show_alert=True)
 
-    elif query.data in ["get_stock_click", "get_number"]:
+    # 1. Get Number Menu -> Show Services List
+    elif query.data in ["get_stock_click", "get_number_menu"]:
         await query.answer()
         async with aiosqlite.connect(DATABASE_PATH) as db:
-            async with db.execute("SELECT service_name, country, phone_number FROM numbers WHERE status='Available'") as cursor:
-                numbers = await cursor.fetchall()
+            async with db.execute("SELECT DISTINCT service_name FROM numbers WHERE status='Available'") as cursor:
+                services = await cursor.fetchall()
         
-        if numbers:
-            num_list = "\n".join([f"🔹 *{row[0]}* ({row[1]}): `{row[2]}`" for row in numbers[:30]])
-            response_text = f"📱 **Available Numbers (Stock):**\n\n{num_list}\n\n🔗 Main Channel: {MAIN_CHANNEL_URL}\n💬 OTP Group: {OTP_GROUP_URL}"
+        if services:
+            keyboard = []
+            for row in services:
+                serv = row[0]
+                keyboard.append([InlineKeyboardButton(f"📱 {serv}", callback_data=f"sel_serv:{serv}")])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            text_msg = "📱 **Select a Service:**"
         else:
-            response_text = (
+            reply_markup = None
+            text_msg = (
                 f"📱 **Get Number Menu**\n\n"
                 f"⚠️ বর্তমানে কোনো নাম্বার স্টক এ নেই!\n\n"
                 f"🔗 Main Channel: {MAIN_CHANNEL_URL}\n"
                 f"💬 OTP Group: {OTP_GROUP_URL}"
             )
         
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=response_text,
-            parse_mode="Markdown",
-            reply_markup=main_menu_keyboard(user_id)
-        )
+        try:
+            await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
+        except Exception:
+            await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
+
+    # 2. Click Service -> Show Countries List for that Service
+    elif query.data.startswith("sel_serv:"):
+        await query.answer()
+        service_name = query.data.split(":", 1)[1]
+        
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            async with db.execute("SELECT DISTINCT country FROM numbers WHERE service_name=? AND status='Available'", (service_name,)) as cursor:
+                countries = await cursor.fetchall()
+        
+        if countries:
+            keyboard = []
+            for row in countries:
+                country = row[0]
+                keyboard.append([InlineKeyboardButton(f"🌍 {country}", callback_data=f"sel_count:{service_name}:{country}")])
+            keyboard.append([InlineKeyboardButton("🔙 Back to Services", callback_data="get_number_menu")])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            text_msg = f"🌍 **Select Country for `{service_name}`:**"
+        else:
+            reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Services", callback_data="get_number_menu")]])
+            text_msg = f"⚠️ `{service_name}` সার্ভিসে বর্তমানে কোনো কান্ট্রি এভেইলেবল নেই!"
+        
+        await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
+
+    # 3. Click Country -> Show Numbers for that Service & Country
+    elif query.data.startswith("sel_count:"):
+        await query.answer()
+        parts = query.data.split(":", 2)
+        service_name = parts[1]
+        country = parts[2]
+        
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            async with db.execute("SELECT phone_number FROM numbers WHERE service_name=? AND country=? AND status='Available'", (service_name, country)) as cursor:
+                numbers = await cursor.fetchall()
+        
+        if numbers:
+            num_list = "\n".join([f"🔹 `{row[0]}`" for row in numbers[:30]])
+            text_msg = f"📱 **Available Numbers (`{service_name}` - `{country}`):**\n\n{num_list}\n\n🔗 Main Channel: {MAIN_CHANNEL_URL}"
+        else:
+            text_msg = f"⚠️ `{service_name}` ({country}) এ কোনো নাম্বার এভেইলেবল নেই!"
+            
+        reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Countries", callback_data=f"sel_serv:{service_name}")]])
+        
+        await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -200,14 +248,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- Back Button Logic ---
     if text == "🔙 Back":
         if user_id in ADMIN_UPLOAD_STATE:
-            # If inside upload sub-menu steps, go back to Admin Panel
             del ADMIN_UPLOAD_STATE[user_id]
             if user_id == OWNER_ID:
                 await update.message.reply_text("👑 **Admin Control Panel**", parse_mode="Markdown", reply_markup=admin_panel_keyboard())
                 return
         
-        # If in Admin Panel root, clicking Back goes to Main Menu without sending "Main Menu" text
-        await update.message.reply_text("🔽 **Main Menu Active**", reply_markup=main_menu_keyboard(user_id))
+        await update.message.reply_text("👇 Main Menu:", reply_markup=main_menu_keyboard(user_id))
         return
 
     is_joined = await check_force_join(user_id, context)
@@ -360,21 +406,26 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif text == "📱 GET NUMBER":
         async with aiosqlite.connect(DATABASE_PATH) as db:
-            async with db.execute("SELECT service_name, country, phone_number FROM numbers WHERE status='Available'") as cursor:
-                numbers = await cursor.fetchall()
+            async with db.execute("SELECT DISTINCT service_name FROM numbers WHERE status='Available'") as cursor:
+                services = await cursor.fetchall()
         
-        if numbers:
-            num_list = "\n".join([f"🔹 *{row[0]}* ({row[1]}): `{row[2]}`" for row in numbers[:30]])
-            response_text = f"📱 **Available Numbers (Stock):**\n\n{num_list}\n\n🔗 Main Channel: {MAIN_CHANNEL_URL}\n💬 OTP Group: {OTP_GROUP_URL}"
+        if services:
+            keyboard = []
+            for row in services:
+                serv = row[0]
+                keyboard.append([InlineKeyboardButton(f"📱 {serv}", callback_data=f"sel_serv:{serv}")])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            text_msg = "📱 **Select a Service:**"
         else:
-            response_text = (
+            reply_markup = None
+            text_msg = (
                 f"📱 **Get Number Menu**\n\n"
                 f"⚠️ বর্তমানে কোনো নাম্বার স্টক এ নেই!\n\n"
                 f"🔗 Main Channel: {MAIN_CHANNEL_URL}\n"
                 f"💬 OTP Group: {OTP_GROUP_URL}"
             )
         
-        await update.message.reply_text(response_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
+        await update.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
         
     elif text == "🔎 SEARCH NUMBER":
         await update.message.reply_text(
