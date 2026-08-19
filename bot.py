@@ -206,8 +206,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("👑 **Admin Control Panel**", parse_mode="Markdown", reply_markup=admin_panel_keyboard())
                 return
         
-        # If in Admin Panel root, clicking Back goes to Main Menu
-        await update.message.reply_text("🌐 **Main Menu**", parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
+        # If in Admin Panel root, clicking Back goes to Main Menu without sending "Main Menu" text
+        await update.message.reply_text("🔽 **Main Menu Active**", reply_markup=main_menu_keyboard(user_id))
         return
 
     is_joined = await check_force_join(user_id, context)
