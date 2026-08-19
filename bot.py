@@ -204,37 +204,40 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
 
-    # 3. Click Country -> Show Numbers for that Service & Country (Fixed with Regex)
+    # 3. Click Country -> Show Numbers for that Service & Country (Fixed with Safe Try-Catch & Regex)
     elif query.data.startswith("sel_count:"):
         await query.answer()
-        parts = query.data.split(":", 2)
-        if len(parts) >= 3:
-            service_name = parts[1].strip()
-            country = parts[2].strip()
-        else:
-            service_name = "Unknown"
-            country = "Unknown"
-        
-        cursor = numbers_col.find({
-            "service_name": {"$regex": f"^{service_name}$", "$options": "i"},
-            "country": {"$regex": f"^{country}$", "$options": "i"},
-            "status": "Available"
-        })
-        numbers = await cursor.to_list(length=30)
-        
-        if numbers:
-            num_list = "\n".join([f"🔹 `{row['phone_number']}`" for row in numbers])
-            text_msg = f"📱 **Available Numbers (`{service_name}` - `{country}`):**\n\n{num_list}\n\n🔗 Main Channel: {MAIN_CHANNEL_URL}"
-        else:
-            # নোটিস সিস্টেম: নাম্বার না থাকলে সুন্দর নোটিস দেখাবে
-            text_msg = f"⚠️ দুঃখিত! `{service_name}` ({country}) এ বর্তমানে কোনো নাম্বার এভেইলেবল নেই।"
-            
-        reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Countries", callback_data=f"sel_serv:{service_name}")]])
-        
         try:
-            await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
-        except Exception:
-            await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
+            parts = query.data.split(":", 2)
+            if len(parts) >= 3:
+                service_name = parts[1].strip()
+                country = parts[2].strip()
+            else:
+                service_name = "Unknown"
+                country = "Unknown"
+            
+            cursor = numbers_col.find({
+                "service_name": {"$regex": f"^{service_name}$", "$options": "i"},
+                "country": {"$regex": f"^{country}$", "$options": "i"},
+                "status": "Available"
+            })
+            numbers = await cursor.to_list(length=30)
+            
+            if numbers:
+                num_list = "\n".join([f"🔹 `{row['phone_number']}`" for row in numbers])
+                text_msg = f"📱 **Available Numbers (`{service_name}` - `{country}`):**\n\n{num_list}\n\n🔗 Main Channel: {MAIN_CHANNEL_URL}"
+            else:
+                text_msg = f"⚠️ দুঃখিত! `{service_name}` ({country}) এ বর্তমানে কোনো নাম্বার এভেইলেবল নেই।"
+                
+            reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Countries", callback_data=f"sel_serv:{service_name}")]])
+            
+            try:
+                await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
+            except Exception:
+                await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
+        except Exception as e:
+            logging.error(f"Error in sel_count callback: {e}")
+            await query.message.reply_text(f"⚠️ একটি টেকনিক্যাল সমস্যা হয়েছে: {e}")
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
