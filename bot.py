@@ -214,7 +214,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Services", callback_data="get_number_menu")]])
             text_msg = f"⚠️ `{service_name}` সার্ভিসে বর্তমানে কোনো কান্ট্রি এভেইলেবল নেই!"
         
-        await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
+        try:
+            await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
+        except Exception:
+            await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
 
     # 3. Click Country -> Show Numbers for that Service & Country
     elif query.data.startswith("sel_count:"):
@@ -235,7 +238,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Countries", callback_data=f"sel_serv:{service_name}")]])
         
-        await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
+        try:
+            await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
+        except Exception:
+            await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -507,7 +513,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     else:
         if not update.message.document and user_id not in ADMIN_UPLOAD_STATE:
-            await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন।", reply_markup=main_menu_keyboard(user_id))
+            await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন።", reply_markup=main_menu_keyboard(user_id))
 
 async def main():
     await init_db()
