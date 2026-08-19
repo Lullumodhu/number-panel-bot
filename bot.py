@@ -14,14 +14,12 @@ OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 # --- Permanent Links & Info ---
 MAIN_CHANNEL_URL = "https://t.me/Zentrix_Officiall"
-MAIN_CHANNEL_ID = "@Zentrix_Officiall"  # ইউজারনেম বা আইডি (এডমিন থাকতে হবে)
+MAIN_CHANNEL_ID = "@Zentrix_Officiall"
 
 UPDATE_CHANNEL_URL = "https://t.me/Zentrix_Update"
 UPDATE_CHANNEL_ID = "@Zentrix_Update"
 
 OTP_GROUP_URL = "https://t.me/+pBpZWtQC4qswODI1"
-OTP_GROUP_ID = "-100..." # প্রাইভেট গ্রুপের ক্ষেত্রে গ্রুপ আইডি বসাতে হয়, তবে আপাতত ইউজারনেম চেক মেথড ব্যবহার করা হচ্ছে
-
 SUPPORT_ADMIN = "@ranaXvou"
 
 # --- Database ---
@@ -30,22 +28,20 @@ async def init_db():
         await db.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT)")
         await db.commit()
 
-# --- Force Join Check Function (Multiple Channels/Groups) ---
+# --- Force Join Check Function ---
 async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
     channels_to_check = [
-        ("Main Channel", MAIN_CHANNEL_ID, MAIN_CHANNEL_URL),
-        ("Update Channel", UPDATE_CHANNEL_ID, UPDATE_CHANNEL_URL)
+        ("Main Channel", MAIN_CHANNEL_ID),
+        ("Update Channel", UPDATE_CHANNEL_ID)
     ]
     
-    for name, chat_id, url in channels_to_check:
+    for name, chat_id in channels_to_check:
         try:
-            # বট যদি চ্যানেলে এডমিন না থাকে বা ভুল আইডি হয়, তবে এরর হ্যান্ডেল করার জন্য try-except
             member = await context.bot.get_chat_member(chat_id=chat_id, user_id=user_id)
             if member.status in ['left', 'kicked']:
                 return False
         except Exception as e:
             logger.info(f"Could not check chat {chat_id}: {e}")
-            # যদি প্রাইভেট গ্রুপ বা চ্যাট আইডি কনফিগারেশনের কারণে চেক না করা যায়, ট্রু রিটার্ন করবে যাতে বট আটকে না যায়
             pass
             
     return True
@@ -76,7 +72,6 @@ def admin_panel_keyboard():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
-    # Force Join Check (প্রতিবার কমান্ড দিলে চেক করবে, লিভ নিলে আটকে দিবে)
     is_joined = await check_force_join(user.id, context)
     if not is_joined:
         keyboard = [
@@ -87,7 +82,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await update.message.reply_text(
             "⚠️ **বটটি ব্যবহার করতে হলে অবশ্যই আমাদের চ্যানেল এবং গ্রুপগুলোতে জয়েন থাকতে হবে!**\n\n"
-            "দয়া করে নিচের লিংকগুলোতে জয়েন করে তারপর **'Joined / Check'** বাটনে চাপুন।",
+            "দয়া করে নিচের লিংকগুলোতে জয়েন করুন এবং তারপর **'Joined / Check'** বাটনে চাপুন।",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
@@ -111,37 +106,36 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Inline Callback Handler for Force Join Check Button
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     user_id = query.from_user.id
 
-    if query.data == "check_join":
-        is_joined = await check_force_join(user_id, context)
-        if is_joined:
-            try:
-                await query.message.delete()
-            except Exception:
-                pass
-                
-            user = query.from_user
-            async with aiosqlite.connect(DATABASE_PATH) as db:
-                await db.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user.id, user.username))
-                await db.commit()
+    is_joined = await check_force_join(user_id, context)
+    if is_joined:
+        await query.answer("✅ ধন্যবাদ! সফলভাবে ভেরিফাই করা হয়েছে।", show_alert=False)
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
             
-            welcome_text = (
-                f"🌐 **NUMBER PANEL**\n\n"
-                f"👋 Welcome, **{user.first_name}**\n"
-                f"🚀 Premium Number Management System\n\n"
-                f"⚡ Fast • Simple • Secure"
-            )
-            await context.bot.send_message(chat_id=user_id, text=welcome_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
-        else:
-            await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি!", show_alert=True)
+        user = query.from_user
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            await db.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user.id, user.username))
+            await db.commit()
+        
+        welcome_text = (
+            f"🌐 **NUMBER PANEL**\n\n"
+            f"👋 Welcome, **{user.first_name}**\n"
+            f"🚀 Premium Number Management System\n\n"
+            f"⚡ Fast • Simple • Secure"
+        )
+        await context.bot.send_message(chat_id=user_id, text=welcome_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
+    else:
+        # সুন্দর পপ-আপ অ্যালার্ট মেসেজ
+        await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন।", show_alert=True)
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = update.effective_user.id
 
-    # কোনো বাটন চাপলেও আগে ফোর্স জয়েন চেক করবে, যাতে লিভ নিলেও ধরা খায়
     is_joined = await check_force_join(user_id, context)
     if not is_joined and text != "/start" and text != "🏠 Main Menu":
         keyboard = [
@@ -151,7 +145,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("✅ Joined / Check", callback_data="check_join")]
         ]
         await update.message.reply_text(
-            "⚠️ আপনি চ্যানেল বা গ্রুপ থেকে লিভ নিয়েছেন! দয়া করে আবার জয়েন করুন:",
+            "⚠️ আপনি চ্যানেল বা গ্রুপ থেকে লিভ নিয়েছেন!\nবট ব্যবহার করতে হলে আবার জয়েন করে **'Joined / Check'** বাটনে চাপুন:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
@@ -188,7 +182,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"👥 **Referral System**\n\n"
             f"আপনার রেফাল লিংকটি বন্ধুদের সাথে শেয়ার করুন:\n`{ref_link}`",
-            parse_mode="Markdown",
+            parse_Mode="Markdown",
             reply_markup=back_menu_keyboard()
         )
         
