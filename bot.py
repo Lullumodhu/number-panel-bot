@@ -57,7 +57,7 @@ async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
             
     return True
 
-# --- Broadcast Function to All Users (Fixed) ---
+# --- Broadcast Function to All Users ---
 async def send_broadcast_to_all(context: ContextTypes.DEFAULT_TYPE, message_text: str, keyboard=None):
     async with aiosqlite.connect(DATABASE_PATH) as db:
         async with db.execute("SELECT user_id FROM users") as cursor:
@@ -72,7 +72,7 @@ async def send_broadcast_to_all(context: ContextTypes.DEFAULT_TYPE, message_text
                 parse_mode="Markdown", 
                 reply_markup=keyboard
             )
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.03)
         except Exception as e:
             logging.info(f"Could not send message to {user_id}: {e}")
 
@@ -102,6 +102,15 @@ def admin_panel_keyboard():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
+    # Clear any admin states on /start
+    if user.id in ADMIN_UPLOAD_STATE:
+        del ADMIN_UPLOAD_STATE[user.id]
+
+    # Save user to DB immediately on start
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user.id, user.username))
+        await db.commit()
+
     is_joined = await check_force_join(user.id, context)
     if not is_joined:
         keyboard = [
@@ -118,10 +127,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        await db.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user.id, user.username))
-        await db.commit()
-
     welcome_text = (
         f"🌐 **NUMBER PANEL**\n\n"
         f"👋 Welcome, **{user.first_name}**\n"
@@ -133,7 +138,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user.id))
 
-# Inline Callback Handler for Force Join & Get Number Click
+# Inline Callback Handler
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
@@ -183,15 +188,27 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=user_id,
             text=response_text,
             parse_mode="Markdown",
-            reply_markup=close_keyboard()
+            reply_markup=main_menu_keyboard(user_id)
         )
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text if update.message.text else ""
 
+    # Ensure user is tracked in DB
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, update.effective_user.username))
+        await db.commit()
+
+    # --- Close Button Logic ---
+    if text == "❌ Close":
+        if user_id in ADMIN_UPLOAD_STATE:
+            del ADMIN_UPLOAD_STATE[user_id]
+        await update.message.reply_text("মেনু বন্ধ করা হয়েছে। আবার মেনু দেখতে চাইলে /start লিখুন।", reply_markup=ReplyKeyboardMarkup([[KeyboardButton("/start")]], resize_keyboard=True))
+        return
+
     is_joined = await check_force_join(user_id, context)
-    if not is_joined and text != "/start" and text != "❌ Close":
+    if not is_joined and text != "/start":
         keyboard = [
             [InlineKeyboardButton("📢 Join Main Channel", url=MAIN_CHANNEL_URL)],
             [InlineKeyboardButton("📢 Join Update Channel", url=UPDATE_CHANNEL_URL)],
@@ -204,19 +221,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- Close Button Logic ---
-    if text == "❌ Close":
-        if user_id in ADMIN_UPLOAD_STATE:
-            del ADMIN_UPLOAD_STATE[user_id]
-        await update.message.reply_text("মেনু বন্ধ করা হয়েছে। আবার মেনু দেখতে চাইলে /start লিখুন।", reply_markup=ReplyKeyboardMarkup([[KeyboardButton("/start")]], resize_keyboard=True))
-        return
-
     # --- Step-by-Step Admin Upload Flow ---
     if user_id == OWNER_ID and user_id in ADMIN_UPLOAD_STATE:
         state_data = ADMIN_UPLOAD_STATE[user_id]
         current_step = state_data.get("step")
 
-        # Step 1: Receiving Service Name -> Moving to Country Prompt
+        # Step 1: Receiving Service Name
         if current_step == "GET_SERVICE":
             service_name = text.strip()
             if not service_name:
@@ -232,7 +242,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Step 2: Receiving Country Name -> Moving to File/Numbers Prompt
+        # Step 2: Receiving Country Name
         elif current_step == "GET_COUNTRY":
             country = text.strip()
             if not country:
@@ -269,7 +279,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
             del ADMIN_UPLOAD_STATE[user_id]
             
-            # Broadcast Notification with working callback button
+            # Broadcast Notification
             broadcast_notification = (
                 f"🆕 **New Stock Added** 🔵\n\n"
                 f"🌍 `{country}` | 📱 `{service_name}`\n"
@@ -326,7 +336,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
             del ADMIN_UPLOAD_STATE[user_id]
             
-            # Broadcast Notification with working callback button
+            # Broadcast Notification
             broadcast_notification = (
                 f"🆕 **New Stock Added** 🔵\n\n"
                 f"🌍 `{country}` | 📱 `{service_name}`\n"
@@ -346,9 +356,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+    # --- Main Menu Options ---
     if text == "/start":
-        if user_id in ADMIN_UPLOAD_STATE:
-            del ADMIN_UPLOAD_STATE[user_id]
         await start(update, context)
         
     elif text == "📱 GET NUMBER":
@@ -357,7 +366,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 numbers = await cursor.fetchall()
         
         if numbers:
-            num_list = "\n".join([f"🔹 *{row[0]}* ({row[1]}): `{row[2]}`" for row in numbers[:30]])
+            num_list = "\n".join([f"🔹 *{row[0]}* ({row[1]}: `{row[2]}`" for row in numbers[:30]])
             response_text = f"📱 **Available Numbers (Stock):**\n\n{num_list}\n\n🔗 Main Channel: {MAIN_CHANNEL_URL}\n💬 OTP Group: {OTP_GROUP_URL}"
         else:
             response_text = (
@@ -367,7 +376,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"💬 OTP Group: {OTP_GROUP_URL}"
             )
         
-        await update.message.reply_text(response_text, parse_mode="Markdown", reply_markup=close_keyboard())
+        await update.message.reply_text(response_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
         
     elif text == "🔎 SEARCH NUMBER":
         await update.message.reply_text(
@@ -379,7 +388,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"🚦 সিস্টেমের বর্তমান ট্রাফিক স্বাভাবিক আছে।\n\nঅফিশিয়াল আপডেট পেতে ভিজিট করুন: {UPDATE_CHANNEL_URL}",
             parse_mode="Markdown",
-            reply_markup=close_keyboard()
+            reply_markup=main_menu_keyboard(user_id)
         )
         
     elif text == "👥 REFERRAL":
@@ -389,13 +398,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👥 **Referral System**\n\n"
             f"আপনার রেফাল লিংকটি বন্ধুদের সাথে শেয়ার করুন:\n`{ref_link}`",
             parse_mode="Markdown",
-            reply_markup=close_keyboard()
+            reply_markup=main_menu_keyboard(user_id)
         )
         
     elif text == "💸 WITHDRAW":
         await update.message.reply_text(
             "💸 আপনার বর্তমান ব্যালেন্স অপর্যাপ্ত। উইথড্র করতে মিনিমাম ব্যালেন্স প্রয়োজন।",
-            reply_markup=close_keyboard()
+            reply_markup=main_menu_keyboard(user_id)
         )
         
     elif text == "🆘 SUPPORT":
@@ -404,7 +413,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👤 Support Admin: {SUPPORT_ADMIN}\n"
             f"💬 OTP Discussion Group: {OTP_GROUP_URL}",
             parse_mode="Markdown",
-            reply_markup=close_keyboard()
+            reply_markup=main_menu_keyboard(user_id)
         )
         
     elif text == "👑 ADMIN PANEL" and user_id == OWNER_ID:
@@ -448,8 +457,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     else:
-        if not update.message.document:
-            await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন।")
+        if not update.message.document and user_id not in ADMIN_UPLOAD_STATE:
+            await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন。", reply_markup=main_menu_keyboard(user_id))
 
 async def main():
     await init_db()
