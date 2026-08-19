@@ -154,9 +154,30 @@ async def main():
 
 if __name__ == "__main__":
     import asyncio
+    
+    async def main_runner():
+        await init_db()
+        application = Application.builder().token(BOT_TOKEN).build()
+
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CallbackQueryHandler(button_handler))
+
+        print("Bot is running...")
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling()
+        
+        # Keep the bot running
+        stop_signal = asyncio.Event()
+        try:
+            await stop_signal.wait()
+        finally:
+            await application.updater.stop()
+            await application.stop()
+            await application.shutdown()
+
     try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
+        asyncio.run(main_runner())
+    except (KeyboardInterrupt, RuntimeError):
         pass
 
-    
