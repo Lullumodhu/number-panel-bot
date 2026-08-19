@@ -136,7 +136,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user.id))
 
-# Inline Callback Handler (Fixed for Get Number click)
+# Inline Callback Handler
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
@@ -165,7 +165,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন।", show_alert=True)
 
-    elif query.data == "get_stock_click":
+    elif query.data in ["get_stock_click", "get_number"]:
         await query.answer()
         async with aiosqlite.connect(DATABASE_PATH) as db:
             async with db.execute("SELECT service_name, country, phone_number FROM numbers WHERE status='Available'") as cursor:
@@ -200,12 +200,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- Back Button Logic ---
     if text == "🔙 Back":
         if user_id in ADMIN_UPLOAD_STATE:
+            # If inside upload sub-menu steps, go back to Admin Panel
             del ADMIN_UPLOAD_STATE[user_id]
+            if user_id == OWNER_ID:
+                await update.message.reply_text("👑 **Admin Control Panel**", parse_mode="Markdown", reply_markup=admin_panel_keyboard())
+                return
         
-        if user_id == OWNER_ID:
-            await update.message.reply_text("👑 **Admin Control Panel**", parse_mode="Markdown", reply_markup=admin_panel_keyboard())
-        else:
-            await update.message.reply_text("🌐 **Main Menu**", parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
+        # If in Admin Panel root, clicking Back goes to Main Menu
+        await update.message.reply_text("🌐 **Main Menu**", parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
         return
 
     is_joined = await check_force_join(user_id, context)
