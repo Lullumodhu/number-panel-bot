@@ -22,10 +22,20 @@ UPDATE_CHANNEL_ID = "@Zentrix_Update"
 OTP_GROUP_URL = "https://t.me/+pBpZWtQC4qswODI1"
 SUPPORT_ADMIN = "@ranaXvou"
 
-# --- Database ---
+# --- Database Setup ---
 async def init_db():
     async with aiosqlite.connect(DATABASE_PATH) as db:
+        # Users Table
         await db.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT)")
+        # Numbers Table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS numbers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                service_name TEXT, 
+                phone_number TEXT, 
+                status TEXT DEFAULT 'Available'
+            )
+        """)
         await db.commit()
 
 # --- Force Join Check Function ---
@@ -41,7 +51,6 @@ async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
             if member.status in ['left', 'kicked']:
                 return False
         except Exception as e:
-            logger.info(f"Could not check chat {chat_id}: {e}")
             pass
             
     return True
@@ -129,7 +138,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await context.bot.send_message(chat_id=user_id, text=welcome_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
     else:
-        # সুন্দর পপ-আপ অ্যালার্ট মেসেজ
         await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন।", show_alert=True)
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -154,14 +162,24 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
         
     elif text == "📱 GET NUMBER":
-        await update.message.reply_text(
-            f"📱 **Get Number Menu**\n\n"
-            f"🔗 Main Channel: {MAIN_CHANNEL_URL}\n"
-            f"💬 OTP Group: {OTP_GROUP_URL}\n\n"
-            f"সার্ভিস থেকে নাম্বার নিতে উপরোক্ত গ্রুপ ও চ্যানেল ফলো করুন।",
-            parse_mode="Markdown",
-            reply_markup=back_menu_keyboard()
-        )
+        # ডাটাবেজ থেকে এভেইলএবল নাম্বারগুলো ফেচ করা
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            async with db.execute("SELECT service_name, phone_number FROM numbers WHERE status='Available'") as cursor:
+                numbers = await cursor.fetchall()
+        
+        if numbers:
+            num_list = "\n".join([f"🔹 *{row[0]}*: `{row[1]}`" for row in numbers])
+            response_text = f"📱 **Available Numbers:**\n\n{num_list}\n\n🔗 Main Channel: {MAIN_CHANNEL_URL}\n💬 OTP Group: {OTP_GROUP_URL}"
+        else:
+            response_text = (
+                f"📱 **Get Number Menu**\n\n"
+                f"⚠️ বর্তমানে কোনো নাম্বার স্টক এ নেই!\n\n"
+                f"🔗 Main Channel: {MAIN_CHANNEL_URL}\n"
+                f"💬 OTP Group: {OTP_GROUP_URL}\n\n"
+                f"নতুন নাম্বারের জন্য চ্যানেল ও গ্রুপ ফলো করুন।"
+            )
+        
+        await update.message.reply_text(response_text, parse_mode="Markdown", reply_markup=back_menu_keyboard())
         
     elif text == "🔎 SEARCH NUMBER":
         await update.message.reply_text(
@@ -182,7 +200,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"👥 **Referral System**\n\n"
             f"আপনার রেফাল লিংকটি বন্ধুদের সাথে শেয়ার করুন:\n`{ref_link}`",
-            parse_Mode="Markdown",
+            parse_mode="Markdown",
             reply_markup=back_menu_keyboard()
         )
         
@@ -212,19 +230,51 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         async with aiosqlite.connect(DATABASE_PATH) as db:
             async with db.execute("SELECT COUNT(*) FROM users") as cursor:
                 total_users = (await cursor.fetchone())[0]
+            async with db.execute("SELECT COUNT(*) FROM numbers WHERE status='Available'") as cursor:
+                total_nums = (await cursor.fetchone())[0]
+                
         await update.message.reply_text(
-            f"📊 **Database Overview**\n\nTotal Registered Users: `{total_users}`",
+            f"📊 **Database Overview**\n\n"
+            f"👥 Total Registered Users: `{total_users}`\n"
+            f"📱 Available Numbers: `{total_nums}`",
             parse_mode="Markdown",
             reply_markup=admin_panel_keyboard()
         )
         
-    elif text in ["📢 Broadcast", "⚙️ Number Management", "👥 User Management"] and user_id == OWNER_ID:
+    elif text == "⚙️ Number Management" and user_id == OWNER_ID:
+        # অ্যাডমিন যেন সহজেই নাম্বার যোগ করতে পারে তার ফরম্যাট বলে দেওয়া
+        await update.message.reply_text(
+            "⚙️ **Number Management**\n\n"
+            "নতুন নাম্বার যোগ করতে এই ফরম্যাটে লিখে পাঠান:\n"
+            "`/add_number [Service Name] [Phone Number]`\n\n"
+            "উদাহরণ:\n`/add_number Telegram +8801700000000`",
+            parse_mode="Markdown",
+            reply_markup=admin_panel_keyboard()
+        )
+        
+    elif text in ["📢 Broadcast", "👥 User Management"] and user_id == OWNER_ID:
         await update.message.reply_text(
             f"⚙️ `{text}` ফিচারটি ডেভেলপমেন্ট পর্যায়ে রয়েছে।",
             parse_mode="Markdown",
             reply_markup=admin_panel_keyboard()
         )
         
+    # --- Admin Command to Add Numbers ---
+    elif text.startswith("/add_number") and user_id == OWNER_ID:
+        parts = text.split(maxsplit=2)
+        if len(parts) < 3:
+            await update.message.reply_text("❌ সঠিক ফরম্যাটে দিন!\nব্যবহার: `/add_number [Service] [Number]`", parse_mode="Markdown")
+            return
+            
+        service_name = parts[1]
+        phone_number = parts[2]
+        
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            await db.execute("INSERT INTO numbers (service_name, phone_number, status) VALUES (?, ?, 'Available')", (service_name, phone_number))
+            await db.commit()
+            
+        await update.message.reply_text(f"✅ সফলভাবে নাম্বার যুক্ত করা হয়েছে!\n\n🔹 সার্ভিস: `{service_name}`\n📱 নাম্বার: `{phone_number}`", parse_mode="Markdown")
+
     else:
         await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন।")
 
