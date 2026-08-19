@@ -1,16 +1,22 @@
 import os
 import logging
-import aiosqlite
 import asyncio
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
+import motor.motor_asyncio
 
 # Logging setup
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-DATABASE_PATH = os.getenv("DATABASE_PATH", "bot.db")
+MONGO_URI = os.getenv("MONGO_URI")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+
+# --- MongoDB Setup ---
+client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
+db = client.zentrix_bot
+users_col = db.users
+numbers_col = db.numbers
 
 # --- Permanent Links & Info ---
 MAIN_CHANNEL_URL = "https://t.me/Zentrix_Officiall"
@@ -24,21 +30,6 @@ SUPPORT_ADMIN = "@ranaXvou"
 
 # Temporary dictionary to track admin state for multi-step uploading
 ADMIN_UPLOAD_STATE = {}
-
-# --- Database Setup ---
-async def init_db():
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        await db.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT)")
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS numbers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                service_name TEXT, 
-                country TEXT,
-                phone_number TEXT, 
-                status TEXT DEFAULT 'Available'
-            )
-        """)
-        await db.commit()
 
 # --- Force Join Check Function ---
 async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -59,12 +50,8 @@ async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # --- Broadcast Function to All Users ---
 async def send_broadcast_to_all(context: ContextTypes.DEFAULT_TYPE, message_text: str, keyboard=None):
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        async with db.execute("SELECT user_id FROM users") as cursor:
-            users = await cursor.fetchall()
-            
-    for user_row in users:
-        user_id = user_row[0]
+    async for user_row in users_col.find({}):
+        user_id = user_row["user_id"]
         try:
             await context.bot.send_message(
                 chat_id=user_id, 
@@ -105,9 +92,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id in ADMIN_UPLOAD_STATE:
         del ADMIN_UPLOAD_STATE[user.id]
 
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        await db.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user.id, user.username))
-        await db.commit()
+    await users_col.update_one(
+        {"user_id": user.id},
+        {"$set": {"username": user.username}},
+        upsert=True
+    )
 
     is_joined = await check_force_join(user.id, context)
     if not is_joined:
@@ -151,9 +140,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
                 
             user = query.from_user
-            async with aiosqlite.connect(DATABASE_PATH) as db:
-                await db.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user.id, user.username))
-                await db.commit()
+            await users_col.update_one(
+                {"user_id": user.id},
+                {"$set": {"username": user.username}},
+                upsert=True
+            )
             
             welcome_text = (
                 f"🌐 **NUMBER PANEL**\n\n"
@@ -168,14 +159,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 1. Get Number Menu -> Show Services List
     elif query.data in ["get_stock_click", "get_number_menu"]:
         await query.answer()
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            async with db.execute("SELECT DISTINCT service_name FROM numbers WHERE status='Available'") as cursor:
-                services = await cursor.fetchall()
+        services = await numbers_col.distinct("service_name", {"status": "Available"})
         
         if services:
             keyboard = []
-            for row in services:
-                serv = row[0]
+            for serv in services:
                 keyboard.append([InlineKeyboardButton(f"📱 {serv}", callback_data=f"sel_serv:{serv}")])
             reply_markup = InlineKeyboardMarkup(keyboard)
             text_msg = "📱 **Select a Service:**"
@@ -198,14 +186,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         service_name = query.data.split(":", 1)[1].strip()
         
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            async with db.execute("SELECT DISTINCT country FROM numbers WHERE TRIM(service_name)=TRIM(?) AND status='Available'", (service_name,)) as cursor:
-                countries = await cursor.fetchall()
+        countries = await numbers_col.distinct("country", {"service_name": service_name, "status": "Available"})
         
         if countries:
             keyboard = []
-            for row in countries:
-                country = row[0]
+            for country in countries:
                 keyboard.append([InlineKeyboardButton(f"🌍 {country}", callback_data=f"sel_count:{service_name}:{country}")])
             keyboard.append([InlineKeyboardButton("🔙 Back to Services", callback_data="get_number_menu")])
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -219,7 +204,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
 
-    # 3. Click Country -> Show Numbers for that Service & Country (Fully Secured & Trimmed)
+    # 3. Click Country -> Show Numbers for that Service & Country
     elif query.data.startswith("sel_count:"):
         await query.answer()
         parts = query.data.split(":", 2)
@@ -230,18 +215,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             service_name = "Unknown"
             country = "Unknown"
         
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            async with db.execute(
-                "SELECT phone_number FROM numbers WHERE TRIM(service_name)=TRIM(?) AND TRIM(country)=TRIM(?) AND status='Available'", 
-                (service_name, country)
-            ) as cursor:
-                numbers = await cursor.fetchall()
+        cursor = numbers_col.find({"service_name": service_name, "country": country, "status": "Available"})
+        numbers = await cursor.to_list(length=30)
         
         if numbers:
-            num_list = "\n".join([f"🔹 `{row[0]}`" for row in numbers[:30]])
+            num_list = "\n".join([f"🔹 `{row['phone_number']}`" for row in numbers])
             text_msg = f"📱 **Available Numbers (`{service_name}` - `{country}`):**\n\n{num_list}\n\n🔗 Main Channel: {MAIN_CHANNEL_URL}"
         else:
-            text_msg = f"⚠️ `{service_name}` ({country}) এ বর্তমানে কোনো নাম্বার এভেইলেবল নেই!"
+            # নোটিস সিস্টেম: নাম্বার না থাকলে সুন্দর নোটিস দেখাবে
+            text_msg = f"⚠️ দুঃখিত! `{service_name}` ({country}) এ বর্তমানে কোনো নাম্বার এভেইলেবল নেই।"
             
         reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Countries", callback_data=f"sel_serv:{service_name}")]])
         
@@ -254,9 +236,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text if update.message.text else ""
 
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        await db.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, update.effective_user.username))
-        await db.commit()
+    await users_col.update_one(
+        {"user_id": user_id},
+        {"$set": {"username": update.effective_user.username}},
+        upsert=True
+    )
 
     # --- Back Button Logic ---
     if text == "🔙 Back":
@@ -328,13 +312,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ কোনো নাম্বার পাওয়া যায়নি। সঠিক লাইনে নাম্বারগুলো পেস্ট করুন বা ফাইল দিন।")
                 return
                 
-            async with aiosqlite.connect(DATABASE_PATH) as db:
-                for num in numbers_list:
-                    await db.execute(
-                        "INSERT INTO numbers (service_name, country, phone_number, status) VALUES (?, ?, ?, 'Available')",
-                        (service_name, country, num)
-                    )
-                await db.commit()
+            docs = [{"service_name": service_name, "country": country, "phone_number": num, "status": "Available"} for num in numbers_list]
+            await numbers_col.insert_many(docs)
                 
             del ADMIN_UPLOAD_STATE[user_id]
             
@@ -346,7 +325,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             keyboard_broadcast = InlineKeyboardMarkup([[InlineKeyboardButton("📞 Get Number", callback_data="get_stock_click")]])
             
-            # Send broadcast to all users
             await send_broadcast_to_all(context, broadcast_notification, keyboard_broadcast)
 
             await update.message.reply_text(
@@ -385,13 +363,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ ফাইলটি খালি রয়েছে বা সঠিক ফরম্যাটে নেই।")
                 return
                 
-            async with aiosqlite.connect(DATABASE_PATH) as db:
-                for num in numbers_list:
-                    await db.execute(
-                        "INSERT INTO numbers (service_name, country, phone_number, status) VALUES (?, ?, ?, 'Available')",
-                        (service_name, country, num)
-                    )
-                await db.commit()
+            docs = [{"service_name": service_name, "country": country, "phone_number": num, "status": "Available"} for num in numbers_list]
+            await numbers_col.insert_many(docs)
                 
             del ADMIN_UPLOAD_STATE[user_id]
             
@@ -403,7 +376,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             keyboard_broadcast = InlineKeyboardMarkup([[InlineKeyboardButton("📞 Get Number", callback_data="get_stock_click")]])
             
-            # Send broadcast to all registered users
             await send_broadcast_to_all(context, broadcast_notification, keyboard_broadcast)
 
             await update.message.reply_text(
@@ -420,14 +392,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
         
     elif text == "📱 GET NUMBER":
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            async with db.execute("SELECT DISTINCT service_name FROM numbers WHERE status='Available'") as cursor:
-                services = await cursor.fetchall()
+        services = await numbers_col.distinct("service_name", {"status": "Available"})
         
         if services:
             keyboard = []
-            for row in services:
-                serv = row[0]
+            for serv in services:
                 keyboard.append([InlineKeyboardButton(f"📱 {serv}", callback_data=f"sel_serv:{serv}")])
             reply_markup = InlineKeyboardMarkup(keyboard)
             text_msg = "📱 **Select a Service:**"
@@ -490,11 +459,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     elif text == "📊 Overview" and user_id == OWNER_ID:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            async with db.execute("SELECT COUNT(*) FROM users") as cursor:
-                total_users = (await cursor.fetchone())[0]
-            async with db.execute("SELECT COUNT(*) FROM numbers WHERE status='Available'") as cursor:
-                total_nums = (await cursor.fetchone())[0]
+        total_users = await users_col.count_documents({})
+        total_nums = await numbers_col.count_documents({"status": "Available"})
                 
         await update.message.reply_text(
             f"📊 **Database Overview**\n\n"
@@ -525,7 +491,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন।", reply_markup=main_menu_keyboard(user_id))
 
 async def main():
-    await init_db()
     application = Application.builder().token(BOT_TOKEN).build()
 
     await application.bot.set_my_commands([BotCommand("start", "Start the bot")])
@@ -535,7 +500,7 @@ async def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     application.add_handler(MessageHandler(filters.Document.ALL, message_handler))
 
-    print("Bot is running...")
+    print("Bot is running with MongoDB...")
     
     async def main_runner():
         await application.initialize()
