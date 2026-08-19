@@ -163,7 +163,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await context.bot.send_message(chat_id=user_id, text=welcome_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
         else:
-            await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন।", show_alert=True)
+            await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন.", show_alert=True)
 
     # 1. Get Number Menu -> Show Services List
     elif query.data in ["get_stock_click", "get_number_menu"]:
@@ -513,7 +513,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     else:
         if not update.message.document and user_id not in ADMIN_UPLOAD_STATE:
-            await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন።", reply_markup=main_menu_keyboard(user_id))
+            await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন।", reply_markup=main_menu_keyboard(user_id))
 
 async def main():
     await init_db()
