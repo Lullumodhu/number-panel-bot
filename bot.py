@@ -163,7 +163,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await context.bot.send_message(chat_id=user_id, text=welcome_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
         else:
-            await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন.", show_alert=True)
+            await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন।", show_alert=True)
 
     # 1. Get Number Menu -> Show Services List
     elif query.data in ["get_stock_click", "get_number_menu"]:
@@ -219,10 +219,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
 
-    # 3. Click Country -> Show Numbers for that Service & Country
+    # 3. Click Country -> Show Numbers for that Service & Country (Fixed Split)
     elif query.data.startswith("sel_count:"):
         await query.answer()
-        parts = query.data.split(":", 2)
+        parts = query.data.split(":")
         service_name = parts[1]
         country = parts[2]
         
@@ -276,7 +276,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- Step-by-Step Admin Upload Flow ---
+    # --- Step-by-Step Admin Upload Flow (Text Numbers) ---
     if user_id == OWNER_ID and user_id in ADMIN_UPLOAD_STATE:
         state_data = ADMIN_UPLOAD_STATE[user_id]
         current_step = state_data.get("step")
@@ -290,7 +290,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ADMIN_UPLOAD_STATE[user_id] = {"step": "GET_COUNTRY", "service": service_name}
             await update.message.reply_text(
                 f"✅ সার্ভিস সিলেক্ট হয়েছে: `{service_name}`\n\n"
-                "🌍 এখন কান্ট্রির নাম বা কোড লিখে পাঠান (যেমন: `USA` বা `Bangladesh`):",
+                "🌍 এখন কান্ট্রির নাম বা কোড লিখে পাঠান (যেমন: `USA` বা `Malaysia`):",
                 parse_mode="Markdown",
                 reply_markup=back_keyboard()
             )
@@ -334,15 +334,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             broadcast_notification = (
                 f"🆕 **New Stock Added** 🔵\n\n"
                 f"🌍 `{country}` | 📱 `{service_name}`\n"
-                f"📦 **TOTALL :** `{len(numbers_list)}` Numbers\n"
+                f"📦 **TOTAL :** `{len(numbers_list)}` Numbers\n"
                 f"💵 **OTP Price :** `0.0$`"
             )
             keyboard_broadcast = InlineKeyboardMarkup([[InlineKeyboardButton("📞 Get Number", callback_data="get_stock_click")]])
             
+            # Send broadcast to all users
             await send_broadcast_to_all(context, broadcast_notification, keyboard_broadcast)
 
             await update.message.reply_text(
-                f"🎉 সফলভাবে **{len(numbers_list)}টি** নাম্বার স্টক এ যুক্ত করা হয়েছে এবং সকল ইউজারের কাছে নোটিফিকেশন পাঠানো হয়েছে!\n\n"
+                f"🎉 সফলভাবে **{len(numbers_list)}টি** নাম্বার স্টক এ যুক্ত করা হয়েছে এবং ব্রডকাস্ট পাঠানো হয়েছে!\n\n"
                 f"🔹 সার্ভিস: `{service_name}`\n"
                 f"🌍 কান্ট্রি: `{country}`",
                 parse_mode="Markdown",
@@ -350,7 +351,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-    # Handle Document (.txt file) Upload in Step 3
+    # --- Handle Document (.txt file) Upload in Step 3 (Fixed Broadcast) ---
     if user_id == OWNER_ID and update.message.document and user_id in ADMIN_UPLOAD_STATE:
         state_data = ADMIN_UPLOAD_STATE[user_id]
         if state_data.get("step") == "GET_NUMBERS":
@@ -390,15 +391,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             broadcast_notification = (
                 f"🆕 **New Stock Added** 🔵\n\n"
                 f"🌍 `{country}` | 📱 `{service_name}`\n"
-                f"📦 **TOTALL :** `{len(numbers_list)}` Numbers\n"
+                f"📦 **TOTAL :** `{len(numbers_list)}` Numbers\n"
                 f"💵 **OTP Price :** `0.0$`"
             )
             keyboard_broadcast = InlineKeyboardMarkup([[InlineKeyboardButton("📞 Get Number", callback_data="get_stock_click")]])
             
+            # Send broadcast to all registered users
             await send_broadcast_to_all(context, broadcast_notification, keyboard_broadcast)
 
             await update.message.reply_text(
-                f"🎉 ফাইল থেকে সফলভাবে **{len(numbers_list)}টি** নাম্বার স্টক এ যুক্ত করা হয়েছে এবং সকল ইউজারের কাছে নোটিফিকেশন পাঠানো হয়েছে!\n\n"
+                f"🎉 ফাইল থেকে সফলভাবে **{len(numbers_list)}টি** নাম্বার স্টক এ যুক্ত করা হয়েছে এবং সকল ইউজারের কাছে ব্রডকাস্ট পাঠানো হয়েছে!\n\n"
                 f"🔹 সার্ভিস: `{service_name}`\n"
                 f"🌍 কান্ট্রি: `{country}`",
                 parse_mode="Markdown",
@@ -452,7 +454,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"👥 **Referral System**\n\n"
             f"আপনার রেফাল লিংকটি বন্ধুদের সাথে শেয়ার করুন:\n`{ref_link}`",
-            parse_mode="Markdown",
+            parse_Mode="Markdown",
             reply_markup=main_menu_keyboard(user_id)
         )
         
