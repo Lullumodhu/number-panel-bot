@@ -87,14 +87,14 @@ def main_menu_keyboard(user_id: int):
         keyboard.append([KeyboardButton("👑 ADMIN PANEL")])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-def close_keyboard():
-    return ReplyKeyboardMarkup([[KeyboardButton("❌ Close")]], resize_keyboard=True)
+def back_keyboard():
+    return ReplyKeyboardMarkup([[KeyboardButton("🔙 Back")]], resize_keyboard=True)
 
 def admin_panel_keyboard():
     keyboard = [
         [KeyboardButton("📊 Overview"), KeyboardButton("📢 Broadcast")],
         [KeyboardButton("⚙️ Number Management"), KeyboardButton("👥 User Management")],
-        [KeyboardButton("❌ Close")]
+        [KeyboardButton("🔙 Back")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -102,11 +102,9 @@ def admin_panel_keyboard():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
-    # Clear any admin states on /start
     if user.id in ADMIN_UPLOAD_STATE:
         del ADMIN_UPLOAD_STATE[user.id]
 
-    # Save user to DB immediately on start
     async with aiosqlite.connect(DATABASE_PATH) as db:
         await db.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user.id, user.username))
         await db.commit()
@@ -138,7 +136,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user.id))
 
-# Inline Callback Handler
+# Inline Callback Handler (Fixed for Get Number click)
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
@@ -195,16 +193,19 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text if update.message.text else ""
 
-    # Ensure user is tracked in DB
     async with aiosqlite.connect(DATABASE_PATH) as db:
         await db.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, update.effective_user.username))
         await db.commit()
 
-    # --- Close Button Logic ---
-    if text == "❌ Close":
+    # --- Back Button Logic ---
+    if text == "🔙 Back":
         if user_id in ADMIN_UPLOAD_STATE:
             del ADMIN_UPLOAD_STATE[user_id]
-        await update.message.reply_text("মেনু বন্ধ করা হয়েছে। আবার মেনু দেখতে চাইলে /start লিখুন।", reply_markup=ReplyKeyboardMarkup([[KeyboardButton("/start")]], resize_keyboard=True))
+        
+        if user_id == OWNER_ID:
+            await update.message.reply_text("👑 **Admin Control Panel**", parse_mode="Markdown", reply_markup=admin_panel_keyboard())
+        else:
+            await update.message.reply_text("🌐 **Main Menu**", parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
         return
 
     is_joined = await check_force_join(user_id, context)
@@ -226,7 +227,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state_data = ADMIN_UPLOAD_STATE[user_id]
         current_step = state_data.get("step")
 
-        # Step 1: Receiving Service Name
         if current_step == "GET_SERVICE":
             service_name = text.strip()
             if not service_name:
@@ -238,11 +238,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"✅ সার্ভিস সিলেক্ট হয়েছে: `{service_name}`\n\n"
                 "🌍 এখন কান্ট্রির নাম বা কোড লিখে পাঠান (যেমন: `USA` বা `Bangladesh`):",
                 parse_mode="Markdown",
-                reply_markup=close_keyboard()
+                reply_markup=back_keyboard()
             )
             return
 
-        # Step 2: Receiving Country Name
         elif current_step == "GET_COUNTRY":
             country = text.strip()
             if not country:
@@ -255,11 +254,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"✅ সার্ভিস: `{service_name}` | কান্ট্রি: `{country}`\n\n"
                 "📂 এখন আপনার `.txt` ফাইলটি আপলোড করুন অথবা একসাথে নাম্বারগুলো কপি করে চ্যাটে পেস্ট করে দিন:",
                 parse_mode="Markdown",
-                reply_markup=close_keyboard()
+                reply_markup=back_keyboard()
             )
             return
 
-        # Step 3: Receiving Numbers via Text
         elif current_step == "GET_NUMBERS" and text:
             service_name = state_data["service"]
             country = state_data["country"]
@@ -279,7 +277,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
             del ADMIN_UPLOAD_STATE[user_id]
             
-            # Broadcast Notification
             broadcast_notification = (
                 f"🆕 **New Stock Added** 🔵\n\n"
                 f"🌍 `{country}` | 📱 `{service_name}`\n"
@@ -336,7 +333,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
             del ADMIN_UPLOAD_STATE[user_id]
             
-            # Broadcast Notification
             broadcast_notification = (
                 f"🆕 **New Stock Added** 🔵\n\n"
                 f"🌍 `{country}` | 📱 `{service_name}`\n"
@@ -366,7 +362,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 numbers = await cursor.fetchall()
         
         if numbers:
-            num_list = "\n".join([f"🔹 *{row[0]}* ({row[1]}: `{row[2]}`" for row in numbers[:30]])
+            num_list = "\n".join([f"🔹 *{row[0]}* ({row[1]}): `{row[2]}`" for row in numbers[:30]])
             response_text = f"📱 **Available Numbers (Stock):**\n\n{num_list}\n\n🔗 Main Channel: {MAIN_CHANNEL_URL}\n💬 OTP Group: {OTP_GROUP_URL}"
         else:
             response_text = (
@@ -381,7 +377,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "🔎 SEARCH NUMBER":
         await update.message.reply_text(
             "🔎 আপনি যে নাম্বার বা কান্ট্রি কোড খুঁজতে চান তা লিখে পাঠান:",
-            reply_markup=close_keyboard()
+            reply_markup=back_keyboard()
         )
         
     elif text == "🚦 TRAFFIC":
@@ -446,7 +442,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚙️ **Number Management (Step 1/3)**\n\n"
             "প্রথমে কোন সার্ভিসের জন্য নাম্বার আপলোড করবেন তার নাম লিখে পাঠান (যেমন: `Telegram` বা `WhatsApp`):",
             parse_mode="Markdown",
-            reply_markup=close_keyboard()
+            reply_markup=back_keyboard()
         )
         
     elif text in ["📢 Broadcast", "👥 User Management"] and user_id == OWNER_ID:
@@ -458,7 +454,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     else:
         if not update.message.document and user_id not in ADMIN_UPLOAD_STATE:
-            await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন。", reply_markup=main_menu_keyboard(user_id))
+            await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন।", reply_markup=main_menu_keyboard(user_id))
 
 async def main():
     await init_db()
