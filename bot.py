@@ -22,16 +22,18 @@ UPDATE_CHANNEL_ID = "@Zentrix_Update"
 OTP_GROUP_URL = "https://t.me/+pBpZWtQC4qswODI1"
 SUPPORT_ADMIN = "@ranaXvou"
 
+# Temporary dictionary to track admin state for uploading numbers
+ADMIN_UPLOAD_STATE = {}
+
 # --- Database Setup ---
 async def init_db():
     async with aiosqlite.connect(DATABASE_PATH) as db:
-        # Users Table
         await db.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT)")
-        # Numbers Table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS numbers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, 
                 service_name TEXT, 
+                country TEXT,
                 phone_number TEXT, 
                 status TEXT DEFAULT 'Available'
             )
@@ -50,7 +52,7 @@ async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
             member = await context.bot.get_chat_member(chat_id=chat_id, user_id=user_id)
             if member.status in ['left', 'kicked']:
                 return False
-        except Exception as e:
+        except Exception:
             pass
             
     return True
@@ -158,25 +160,119 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Check if Admin is in the middle of uploading numbers via text/file
+    if user_id == OWNER_ID and user_id in ADMIN_UPLOAD_STATE:
+        state = ADMIN_UPLOAD_STATE[user_id]
+        
+        if state == "WAITING_FOR_DETAILS":
+            # Expected format: ServiceName | CountryName
+            parts = text.split("|")
+            if len(parts) < 2:
+                await update.message.reply_text("❌ সঠিক ফরম্যাটে দিন!\nব্যবহার: `Service Name | Country`\nউদাহরণ: `Telegram | USA`", parse_mode="Markdown")
+                return
+            
+            service_name = parts[0].strip()
+            country = parts[1].strip()
+            
+            ADMIN_UPLOAD_STATE[user_id] = {"state": "WAITING_FOR_NUMBERS", "service": service_name, "country": country}
+            await update.message.reply_text(
+                f"✅ সার্ভিস: `{service_name}` এবং কান্ট্রি: `{country}` সেট হয়েছে।\n\n"
+                "اب আপনি একসাথে যতখুশি **নম্বরগুলো পেস্ট করুন** (প্রতি লাইনে একটি করে নাম্বার) অথবা একটি `.txt` ফাইল আপলোড করুন।",
+                parse_mode="Markdown"
+            )
+            return
+            
+        elif isinstance(state, dict) and state.get("state") == "WAITING_FOR_NUMBERS":
+            service_name = state["service"]
+            country = state["country"]
+            
+            # Process text lines of numbers
+            numbers_list = [line.strip() for line in text.split("\n") if line.strip()]
+            
+            if not numbers_list:
+                await update.message.reply_text("❌ কোনো নাম্বার পাওয়া যায়নি। দয়া করে সঠিক লাইনে নাম্বারগুলো পেস্ট করুন।")
+                return
+                
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                for num in numbers_list:
+                    await db.execute(
+                        "INSERT INTO numbers (service_name, country, phone_number, status) VALUES (?, ?, ?, 'Available')",
+                        (service_name, country, num)
+                    )
+                await db.commit()
+                
+            del ADMIN_UPLOAD_STATE[user_id]
+            await update.message.reply_text(
+                f"🎉 সফলভাবে **{len(numbers_list)}টি** নাম্বার স্টক এ যুক্ত করা হয়েছে!\n\n"
+                f"🔹 সার্ভিস: `{service_name}`\n"
+                f"🌍 কান্ট্রি: `{country}`",
+                parse_mode="Markdown",
+                reply_markup=admin_panel_keyboard()
+            )
+            return
+
+    # Document / File Upload Handler for Bulk Numbers
+    if user_id == OWNER_ID and update.message.document and user_id in ADMIN_UPLOAD_STATE:
+        state = ADMIN_UPLOAD_STATE[user_id]
+        if isinstance(state, dict) and state.get("state") == "WAITING_FOR_NUMBERS":
+            service_name = state["service"]
+            country = state["country"]
+            
+            doc = update.message.document
+            file = await context.bot.get_file(doc.file_id)
+            file_path = "temp_numbers.txt"
+            await file.download_to_drive(file_path)
+            
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+                
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                
+            numbers_list = [line.strip() for line in content.split("\n") if line.strip()]
+            
+            if not numbers_list:
+                await update.message.reply_text("❌ ফাইলটি খালি রয়েছে বা সঠিক ফরম্যাটে নেই।")
+                return
+                
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                for num in numbers_list:
+                    await db.execute(
+                        "INSERT INTO numbers (service_name, country, phone_number, status) VALUES (?, ?, ?, 'Available')",
+                        (service_name, country, num)
+                    )
+                await db.commit()
+                
+            del ADMIN_UPLOAD_STATE[user_id]
+            await update.message.reply_text(
+                f"🎉 ফাইল থেকে সফলভাবে **{len(numbers_list)}টি** নাম্বার স্টক এ যুক্ত করা হয়েছে!\n\n"
+                f"🔹 সার্ভিস: `{service_name}`\n"
+                f"🌍 কান্ট্রি: `{country}`",
+                parse_mode="Markdown",
+                reply_markup=admin_panel_keyboard()
+            )
+            return
+
     if text == "/start" or text == "🏠 Main Menu":
+        # Clear any pending upload state
+        if user_id in ADMIN_UPLOAD_STATE:
+            del ADMIN_UPLOAD_STATE[user_id]
         await start(update, context)
         
     elif text == "📱 GET NUMBER":
-        # ডাটাবেজ থেকে এভেইলএবল নাম্বারগুলো ফেচ করা
         async with aiosqlite.connect(DATABASE_PATH) as db:
-            async with db.execute("SELECT service_name, phone_number FROM numbers WHERE status='Available'") as cursor:
+            async with db.execute("SELECT service_name, country, phone_number FROM numbers WHERE status='Available'") as cursor:
                 numbers = await cursor.fetchall()
         
         if numbers:
-            num_list = "\n".join([f"🔹 *{row[0]}*: `{row[1]}`" for row in numbers])
-            response_text = f"📱 **Available Numbers:**\n\n{num_list}\n\n🔗 Main Channel: {MAIN_CHANNEL_URL}\n💬 OTP Group: {OTP_GROUP_URL}"
+            num_list = "\n".join([f"🔹 *{row[0]}* ({row[1]}): `{row[2]}`" for row in numbers[:20]]) # বেশি হলে প্রথম ২০টি দেখাবে
+            response_text = f"📱 **Available Numbers (Stock):**\n\n{num_list}\n\n🔗 Main Channel: {MAIN_CHANNEL_URL}\n💬 OTP Group: {OTP_GROUP_URL}"
         else:
             response_text = (
                 f"📱 **Get Number Menu**\n\n"
                 f"⚠️ বর্তমানে কোনো নাম্বার স্টক এ নেই!\n\n"
                 f"🔗 Main Channel: {MAIN_CHANNEL_URL}\n"
-                f"💬 OTP Group: {OTP_GROUP_URL}\n\n"
-                f"নতুন নাম্বারের জন্য চ্যানেল ও গ্রুপ ফলো করুন।"
+                f"💬 OTP Group: {OTP_GROUP_URL}"
             )
         
         await update.message.reply_text(response_text, parse_mode="Markdown", reply_markup=back_menu_keyboard())
@@ -220,6 +316,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     elif text == "👑 ADMIN PANEL" and user_id == OWNER_ID:
+        if user_id in ADMIN_UPLOAD_STATE:
+            del ADMIN_UPLOAD_STATE[user_id]
         await update.message.reply_text(
             "👑 **Admin Control Panel**\nনিচের অপশনগুলো থেকে ম্যানেজ করুন:",
             parse_mode="Markdown",
@@ -242,14 +340,15 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     elif text == "⚙️ Number Management" and user_id == OWNER_ID:
-        # অ্যাডমিন যেন সহজেই নাম্বার যোগ করতে পারে তার ফরম্যাট বলে দেওয়া
+        # Bulk Upload Process Start
+        ADMIN_UPLOAD_STATE[user_id] = "WAITING_FOR_DETAILS"
         await update.message.reply_text(
-            "⚙️ **Number Management**\n\n"
-            "নতুন নাম্বার যোগ করতে এই ফরম্যাটে লিখে পাঠান:\n"
-            "`/add_number [Service Name] [Phone Number]`\n\n"
-            "উদাহরণ:\n`/add_number Telegram +8801700000000`",
+            "⚙️ **Bulk Number Upload System**\n\n"
+            "প্রথমে কোন সার্ভিসের জন্য এবং কোন দেশের নাম্বার আপলোড করবেন তা এই ফরম্যাটে লিখে পাঠান:\n\n"
+            "`Service Name | Country`\n\n"
+            "উদাহরণ:\n`Telegram | USA`\n`WhatsApp | India`",
             parse_mode="Markdown",
-            reply_markup=admin_panel_keyboard()
+            reply_markup=back_menu_keyboard()
         )
         
     elif text in ["📢 Broadcast", "👥 User Management"] and user_id == OWNER_ID:
@@ -259,22 +358,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=admin_panel_keyboard()
         )
         
-    # --- Admin Command to Add Numbers ---
-    elif text.startswith("/add_number") and user_id == OWNER_ID:
-        parts = text.split(maxsplit=2)
-        if len(parts) < 3:
-            await update.message.reply_text("❌ সঠিক ফরম্যাটে দিন!\nব্যবহার: `/add_number [Service] [Number]`", parse_mode="Markdown")
-            return
-            
-        service_name = parts[1]
-        phone_number = parts[2]
-        
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            await db.execute("INSERT INTO numbers (service_name, phone_number, status) VALUES (?, ?, 'Available')", (service_name, phone_number))
-            await db.commit()
-            
-        await update.message.reply_text(f"✅ সফলভাবে নাম্বার যুক্ত করা হয়েছে!\n\n🔹 সার্ভিস: `{service_name}`\n📱 নাম্বার: `{phone_number}`", parse_mode="Markdown")
-
     else:
         await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন।")
 
@@ -288,6 +371,8 @@ async def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(callback_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    # Document handler for file uploads
+    application.add_handler(MessageHandler(filters.Document.ALL, message_handler))
 
     print("Bot is running...")
     
