@@ -57,7 +57,7 @@ async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
             
     return True
 
-# --- Broadcast Function to All Users ---
+# --- Broadcast Function to All Users (Fixed to reach everyone safely) ---
 async def send_broadcast_to_all(context: ContextTypes.DEFAULT_TYPE, message_text: str, keyboard=None):
     async with aiosqlite.connect(DATABASE_PATH) as db:
         async with db.execute("SELECT user_id FROM users") as cursor:
@@ -72,6 +72,8 @@ async def send_broadcast_to_all(context: ContextTypes.DEFAULT_TYPE, message_text
                 parse_mode="Markdown", 
                 reply_markup=keyboard
             )
+            # ছোট বিরতি যাতে টেলিগ্রাম API ফ্লাড বা লিমিট না ধরে
+            await asyncio.sleep(0.05)
         except Exception as e:
             logging.info(f"Could not send message to {user_id}: {e}")
 
@@ -133,33 +135,59 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user.id))
 
-# Inline Callback Handler for Force Join Check Button
+# Inline Callback Handler for Force Join & Get Number Click
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
 
-    is_joined = await check_force_join(user_id, context)
-    if is_joined:
-        await query.answer("✅ ধন্যবাদ! সফলভাবে ভেরিফাই করা হয়েছে।", show_alert=False)
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
+    if query.data == "check_join":
+        is_joined = await check_force_join(user_id, context)
+        if is_joined:
+            await query.answer("✅ ধন্যবাদ! সফলভাবে ভেরিফাই করা হয়েছে।", show_alert=False)
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+                
+            user = query.from_user
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                await db.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user.id, user.username))
+                await db.commit()
             
-        user = query.from_user
+            welcome_text = (
+                f"🌐 **NUMBER PANEL**\n\n"
+                f"👋 Welcome, **{user.first_name}**\n"
+                f"🚀 Premium Number Management System\n\n"
+                f"⚡ Fast • Simple • Secure"
+            )
+            await context.bot.send_message(chat_id=user_id, text=welcome_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
+        else:
+            await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন.", show_alert=True)
+
+    # ব্রডকাস্টের Get Number বাটনে ক্লিক করলে স্টক দেখানোর ব্যবস্থা
+    elif query.data == "get_numbers_stock":
+        await query.answer()
         async with aiosqlite.connect(DATABASE_PATH) as db:
-            await db.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user.id, user.username))
-            await db.commit()
+            async with db.execute("SELECT service_name, country, phone_number FROM numbers WHERE status='Available'") as cursor:
+                numbers = await cursor.fetchall()
         
-        welcome_text = (
-            f"🌐 **NUMBER PANEL**\n\n"
-            f"👋 Welcome, **{user.first_name}**\n"
-            f"🚀 Premium Number Management System\n\n"
-            f"⚡ Fast • Simple • Secure"
+        if numbers:
+            num_list = "\n".join([f"🔹 *{row[0]}* ({row[1]}: `{row[2]}`" for row in numbers[:30]])
+            response_text = f"📱 **Available Numbers (Stock):**\n\n{num_list}\n\n🔗 Main Channel: {MAIN_CHANNEL_URL}\n💬 OTP Group: {OTP_GROUP_URL}"
+        else:
+            response_text = (
+                f"📱 **Get Number Menu**\n\n"
+                f"⚠️ বর্তমানে কোনো নাম্বার স্টক এ নেই!\n\n"
+                f"🔗 Main Channel: {MAIN_CHANNEL_URL}\n"
+                f"💬 OTP Group: {OTP_GROUP_URL}"
+            )
+        
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=response_text,
+            parse_mode="Markdown",
+            reply_markup=close_keyboard()
         )
-        await context.bot.send_message(chat_id=user_id, text=welcome_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
-    else:
-        await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন।", show_alert=True)
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -244,14 +272,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
             del ADMIN_UPLOAD_STATE[user_id]
             
-            # Broadcast Notification to All Users in Bot
+            # Broadcast Notification to All Users in Bot (Using callback_data so it works instantly)
             broadcast_notification = (
                 f"🆕 **New Stock Added** 🔵\n\n"
                 f"🌍 `{country}` | 📱 `{service_name}`\n"
                 f"📦 **TOTALL :** `{len(numbers_list)}` Numbers\n"
                 f"💵 **OTP Price :** `0.0$`"
             )
-            keyboard_broadcast = InlineKeyboardMarkup([[InlineKeyboardButton("📞 Get Number", url=f"https://t.me/{context.bot.username}")]])
+            keyboard_broadcast = InlineKeyboardMarkup([[InlineKeyboardButton("📞 Get Number", callback_data="get_numbers_stock")]])
             
             await send_broadcast_to_all(context, broadcast_notification, keyboard_broadcast)
 
@@ -301,14 +329,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
             del ADMIN_UPLOAD_STATE[user_id]
             
-            # Broadcast Notification to All Users in Bot
+            # Broadcast Notification to All Users in Bot (Using callback_data)
             broadcast_notification = (
                 f"🆕 **New Stock Added** 🔵\n\n"
                 f"🌍 `{country}` | 📱 `{service_name}`\n"
                 f"📦 **TOTALL :** `{len(numbers_list)}` Numbers\n"
                 f"💵 **OTP Price :** `0.0$`"
             )
-            keyboard_broadcast = InlineKeyboardMarkup([[InlineKeyboardButton("📞 Get Number", url=f"https://t.me/{context.bot.username}")]])
+            keyboard_broadcast = InlineKeyboardMarkup([[InlineKeyboardButton("📞 Get Number", callback_data="get_numbers_stock")]])
             
             await send_broadcast_to_all(context, broadcast_notification, keyboard_broadcast)
 
