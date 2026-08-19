@@ -204,7 +204,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
 
-    # 3. Click Country -> Show Numbers for that Service & Country
+    # 3. Click Country -> Show Numbers for that Service & Country (Fixed with Regex)
     elif query.data.startswith("sel_count:"):
         await query.answer()
         parts = query.data.split(":", 2)
@@ -215,7 +215,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             service_name = "Unknown"
             country = "Unknown"
         
-        cursor = numbers_col.find({"service_name": service_name, "country": country, "status": "Available"})
+        cursor = numbers_col.find({
+            "service_name": {"$regex": f"^{service_name}$", "$options": "i"},
+            "country": {"$regex": f"^{country}$", "$options": "i"},
+            "status": "Available"
+        })
         numbers = await cursor.to_list(length=30)
         
         if numbers:
