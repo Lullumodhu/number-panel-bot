@@ -133,7 +133,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "check_join":
         is_joined = await check_force_join(user_id, context)
         if is_joined:
-            await query.answer("✅ ধন্যবাদ! সফলভাবে ভেরিফাই করা হয়েছে।", show_alert=False)
+            await query.answer("✅ ধন্যবাদ! সফলভাবে ভেরিফাই করা হয়েছে.", show_alert=False)
             try:
                 await query.message.delete()
             except Exception:
@@ -166,20 +166,20 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for serv in services:
                 keyboard.append([InlineKeyboardButton(f"📱 {serv}", callback_data=f"sel_serv:{serv}")])
             reply_markup = InlineKeyboardMarkup(keyboard)
-            text_msg = "📱 **Select a Service:**"
+            text_msg = "📱 Select a Service:"
         else:
             reply_markup = None
             text_msg = (
-                f"📱 **Get Number Menu**\n\n"
+                f"📱 Get Number Menu\n\n"
                 f"⚠️ বর্তমানে কোনো নাম্বার স্টক এ নেই!\n\n"
                 f"🔗 Main Channel: {MAIN_CHANNEL_URL}\n"
                 f"💬 OTP Group: {OTP_GROUP_URL}"
             )
         
         try:
-            await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
+            await query.message.edit_text(text_msg, reply_markup=reply_markup)
         except Exception:
-            await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
+            await query.message.reply_text(text_msg, reply_markup=reply_markup)
 
     # 2. Click Service -> Show Countries List for that Service
     elif query.data.startswith("sel_serv:"):
@@ -194,17 +194,17 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 keyboard.append([InlineKeyboardButton(f"🌍 {country}", callback_data=f"sel_count:{service_name}:{country}")])
             keyboard.append([InlineKeyboardButton("🔙 Back to Services", callback_data="get_number_menu")])
             reply_markup = InlineKeyboardMarkup(keyboard)
-            text_msg = f"🌍 **Select Country for `{service_name}`:**"
+            text_msg = f"🌍 Select Country for '{service_name}':"
         else:
             reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Services", callback_data="get_number_menu")]])
-            text_msg = f"⚠️ `{service_name}` সার্ভিসে বর্তমানে কোনো কান্ট্রি এভেইলেবল নেই!"
+            text_msg = f"⚠️ '{service_name}' সার্ভিসে বর্তমানে কোনো কান্ট্রি এভেইলেবল নেই!"
         
         try:
-            await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
+            await query.message.edit_text(text_msg, reply_markup=reply_markup)
         except Exception:
-            await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
+            await query.message.reply_text(text_msg, reply_markup=reply_markup)
 
-    # 3. Click Country -> Show Numbers for that Service & Country (Fixed with Regex)
+    # 3. Click Country -> Show Numbers for that Service & Country (Fixed & Crash-Free)
     elif query.data.startswith("sel_count:"):
         await query.answer()
         parts = query.data.split(":", 2)
@@ -220,21 +220,20 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "country": {"$regex": f"^{country}$", "$options": "i"},
             "status": "Available"
         })
-        numbers = await cursor.to_list(length=30)
+        numbers = await cursor.to_list(length=100)
         
         if numbers:
-            num_list = "\n".join([f"🔹 `{row['phone_number']}`" for row in numbers])
-            text_msg = f"📱 **Available Numbers (`{service_name}` - `{country}`):**\n\n{num_list}\n\n🔗 Main Channel: {MAIN_CHANNEL_URL}"
+            num_list = "\n".join([f"🔹 {row['phone_number']}" for row in numbers])
+            text_msg = f"📱 Available Numbers ({service_name} - {country}):\n\n{num_list}\n\n🔗 Main Channel: {MAIN_CHANNEL_URL}"
         else:
-            # নোটিস সিস্টেম: নাম্বার না থাকলে সুন্দর নোটিস দেখাবে
-            text_msg = f"⚠️ দুঃখিত! `{service_name}` ({country}) এ বর্তমানে কোনো নাম্বার এভেইলেবল নেই।"
+            text_msg = f"⚠️ দুঃখিত! {service_name} ({country}) এ বর্তমানে কোনো নাম্বার এভেইলেবল নেই।"
             
         reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Countries", callback_data=f"sel_serv:{service_name}")]])
         
         try:
-            await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
+            await query.message.edit_text(text_msg, reply_markup=reply_markup)
         except Exception:
-            await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
+            await query.message.reply_text(text_msg, reply_markup=reply_markup)
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -403,17 +402,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for serv in services:
                 keyboard.append([InlineKeyboardButton(f"📱 {serv}", callback_data=f"sel_serv:{serv}")])
             reply_markup = InlineKeyboardMarkup(keyboard)
-            text_msg = "📱 **Select a Service:**"
+            text_msg = "📱 Select a Service:"
         else:
             reply_markup = None
             text_msg = (
-                f"📱 **Get Number Menu**\n\n"
+                f"📱 Get Number Menu\n\n"
                 f"⚠️ বর্তমানে কোনো নাম্বার স্টক এ নেই!\n\n"
                 f"🔗 Main Channel: {MAIN_CHANNEL_URL}\n"
                 f"💬 OTP Group: {OTP_GROUP_URL}"
             )
         
-        await update.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
+        await update.message.reply_text(text_msg, reply_markup=reply_markup)
         
     elif text == "🔎 SEARCH NUMBER":
         await update.message.reply_text(
