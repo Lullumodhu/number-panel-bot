@@ -9,7 +9,7 @@ import motor.motor_asyncio
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-MONGO_URI = os.getenv("MONGO_URI")
+MONGO_URI = os.getenv("DATABASE_URL") or os.getenv("MONGO_URL")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 # --- MongoDB Setup ---
@@ -17,7 +17,7 @@ client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
 db = client.zentrix_bot
 users_col = db.users
 numbers_col = db.numbers
-assigned_col = db.assigned_numbers  # ইউজারের কাছে অ্যালটেড নাম্বার ট্র্যাকিংয়ের জন্য
+assigned_col = db.assigned_numbers
 
 # --- Permanent Links & Info ---
 MAIN_CHANNEL_URL = "https://t.me/Zentrix_Officiall"
@@ -27,9 +27,8 @@ UPDATE_CHANNEL_URL = "https://t.me/Zentrix_Update"
 UPDATE_CHANNEL_ID = "@Zentrix_Update"
 
 OTP_GROUP_URL = "https://t.me/+pBpZWtQC4qswODI1"
-OTP_GROUP_ID = -1001234567890  # আপনার ওটিপি গ্রুপের চ্যাট আইডি এখানে দিন (যেখান থেকে বট মেসেজ রিড করবে)
 SUPPORT_ADMIN = "@ranaXvou"
-DEFAULT_OTP_RATE = 0.60  # প্রতি ওটিপি রেট (টাকা)
+DEFAULT_OTP_RATE = 0.60
 
 ADMIN_UPLOAD_STATE = {}
 USER_SEARCH_STATE = {}
@@ -48,21 +47,6 @@ async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
         except Exception:
             pass
     return True
-
-# --- Broadcast Function ---
-async def send_broadcast_to_all(context: ContextTypes.DEFAULT_TYPE, message_text: str, keyboard=None):
-    async for user_row in users_col.find({}):
-        user_id = user_row["user_id"]
-        try:
-            await context.bot.send_message(
-                chat_id=user_id, 
-                text=message_text, 
-                parse_mode="Markdown", 
-                reply_markup=keyboard
-            )
-            await asyncio.sleep(0.03)
-        except Exception as e:
-            logging.info(f"Could not send message to {user_id}: {e}")
 
 # --- Reply Keyboards ---
 def main_menu_keyboard(user_id: int):
@@ -97,8 +81,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await users_col.update_one(
         {"user_id": user.id},
-        {"$set": {"username": user.username}},
-        {"$setOnInsert": {"balance": 0.0, "total_earned": 0.0}},
+        {"$set": {"username": user.username}, "$setOnInsert": {"balance": 0.0, "total_earned": 0.0}},
         upsert=True
     )
 
@@ -129,7 +112,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user.id))
 
-# Inline Callback Handler
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
@@ -146,8 +128,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user = query.from_user
             await users_col.update_one(
                 {"user_id": user.id},
-                {"$set": {"username": user.username}},
-                {"$setOnInsert": {"balance": 0.0, "total_earned": 0.0}},
+                {"$set": {"username": user.username}, "$setOnInsert": {"balance": 0.0, "total_earned": 0.0}},
                 upsert=True
             )
             
@@ -161,41 +142,30 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন।", show_alert=True)
 
-    # 1. Get Number Menu -> Show Services List
     elif query.data in ["get_stock_click", "get_number_menu"]:
         await query.answer()
         services = await numbers_col.distinct("service_name", {"status": "Available"})
         
         if services:
-            keyboard = []
-            for serv in services:
-                keyboard.append([InlineKeyboardButton(f"📱 {serv}", callback_data=f"sel_serv:{serv}")])
+            keyboard = [[InlineKeyboardButton(f"📱 {serv}", callback_data=f"sel_serv:{serv}")] for serv in services]
             reply_markup = InlineKeyboardMarkup(keyboard)
             text_msg = "📱 **Select a Service:**"
         else:
             reply_markup = None
-            text_msg = (
-                f"📱 **Get Number Menu**\n\n"
-                f"⚠️ বর্তমানে কোনো নাম্বার স্টক এ নেই!\n\n"
-                f"🔗 Main Channel: {MAIN_CHANNEL_URL}\n"
-                f"💬 OTP Group: {OTP_GROUP_URL}"
-            )
+            text_msg = "📱 **Get Number Menu**\n\n⚠️ বর্তমানে কোনো নাম্বার স্টক এ নেই!"
         
         try:
             await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
         except Exception:
             await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
 
-    # 2. Click Service -> Show Countries List
     elif query.data.startswith("sel_serv:"):
         await query.answer()
         service_name = query.data.split(":", 1)[1].strip()
         countries = await numbers_col.distinct("country", {"service_name": service_name, "status": "Available"})
         
         if countries:
-            keyboard = []
-            for country in countries:
-                keyboard.append([InlineKeyboardButton(f"🌍 {country}", callback_data=f"sel_count:{service_name}:{country}")])
+            keyboard = [[InlineKeyboardButton(f"🌍 {country}", callback_data=f"sel_count:{service_name}:{country}")] for country in countries]
             keyboard.append([InlineKeyboardButton("🔙 Back to Services", callback_data="get_number_menu")])
             reply_markup = InlineKeyboardMarkup(keyboard)
             text_msg = f"🌍 **Select Country for `{service_name}`:**"
@@ -208,16 +178,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
 
-    # 3. Click Country -> Assign Numbers & Save to Tracking for OTP Matching
     elif query.data.startswith("sel_count:") or query.data.startswith("change_num:"):
         await query.answer()
         parts = query.data.split(":", 2)
-        if len(parts) >= 3:
-            service_name = parts[1].strip()
-            country = parts[2].strip()
-        else:
-            service_name = "Unknown"
-            country = "Unknown"
+        service_name = parts[1].strip() if len(parts) >= 2 else "Unknown"
+        country = parts[2].strip() if len(parts) >= 3 else "Unknown"
         
         cursor = numbers_col.find({
             "service_name": {"$regex": f"^{service_name}$", "$options": "i"},
@@ -231,7 +196,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             num_ids = [doc["_id"] for doc in numbers]
             await numbers_col.update_many({"_id": {"$in": num_ids}}, {"$set": {"status": "Assigned"}})
             
-            # অ্যাসাইন করা নাম্বারগুলো ইউজারের জন্য ডাটাবেজে সেভ করা হলো (OTP ট্র্যাকিংয়ের জন্য)
             for doc in numbers:
                 await assigned_col.insert_one({
                     "user_id": user_id,
@@ -256,7 +220,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("🌍 Other Countries", callback_data=f"sel_serv:{service_name}"),
                 InlineKeyboardButton("🌐 OTP", url=OTP_GROUP_URL)
             ])
-            
             reply_markup = InlineKeyboardMarkup(keyboard)
         else:
             text_msg = f"⚠️ দুঃখিত! `{service_name}` ({country}) এ বর্তমানে নতুন কোনো নাম্বার এভেইলেবল নেই।"
@@ -267,7 +230,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
 
-    # 4. Search Number Next Batch
     elif query.data.startswith("search_next:"):
         await query.answer()
         prefix = query.data.split(":", 1)[1].strip()
@@ -303,7 +265,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("🌍 Other Countries", callback_data="get_number_menu"),
                 InlineKeyboardButton("🌐 OTP Group", url=OTP_GROUP_URL)
             ])
-            
             reply_markup = InlineKeyboardMarkup(keyboard)
             try:
                 await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
@@ -319,30 +280,23 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ])
             )
 
-# --- OTP Group Message Listener (Real-time Code Matching & Balance Add) ---
 async def otp_group_listener(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     if not message or not message.text:
         return
     
-    # যদি মেসেজটি ওটিপি গ্রুপ থেকে আসে (বা যেকোনো গ্রুপ থেকে যেখানে ওটিপি শেয়ার হয়)
     text = message.text
-    
-    # নাম্বার বা ওটিপি প্যাটার্ন ম্যাচ করার জন্য টেক্সট থেকে নাম্বার খোঁজা
     async for assigned_doc in assigned_col.find({}):
         phone = assigned_doc["phone_number"]
-        # যদি গ্রুপের মেসেজে ইউজারের অ্যালটেড নাম্বারটি থাকে
         if phone in text:
             user_id = assigned_doc["user_id"]
             service = assigned_doc["service_name"]
             
-            # ইউজারের ব্যালেন্সে টাকা যোগ করা
             await users_col.update_one(
                 {"user_id": user_id},
                 {"$inc": {"balance": DEFAULT_OTP_RATE, "total_earned": DEFAULT_OTP_RATE}}
             )
             
-            # ইউজারের বটে Snake Bot এর স্টাইলে ওটিপি কোড পাঠানো
             user_msg = (
                 f"🇲🇱 #ML `{phone}` English\n"
                 f"📥 **OTP Received!**\n\n"
@@ -370,8 +324,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await users_col.update_one(
         {"user_id": user_id},
-        {"$set": {"username": update.effective_user.username}},
-        {"$setOnInsert": {"balance": 0.0, "total_earned": 0.0}},
+        {"$set": {"username": update.effective_user.username}, "$setOnInsert": {"balance": 0.0, "total_earned": 0.0}},
         upsert=True
     )
 
@@ -401,7 +354,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- User Search Number Flow ---
     if user_id in USER_SEARCH_STATE:
         prefix = text.strip()
         del USER_SEARCH_STATE[user_id]
@@ -451,7 +403,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    # --- Admin Upload Flow ---
     if user_id == OWNER_ID and user_id in ADMIN_UPLOAD_STATE:
         state_data = ADMIN_UPLOAD_STATE[user_id]
         current_step = state_data.get("step")
@@ -475,7 +426,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             numbers_list = [line.strip() for line in text.split("\n") if line.strip()]
             
             docs = [{"service_name": service_name, "country": country, "phone_number": num, "status": "Available"} for num in numbers_list]
-            await numbers_col.insert_many(docs)
+            if docs:
+                await numbers_col.insert_many(docs)
             del ADMIN_UPLOAD_STATE[user_id]
             
             await update.message.reply_text(f"🎉 সফলভাবে {len(numbers_list)}টি নাম্বার যুক্ত হয়েছে!", reply_markup=admin_panel_keyboard())
@@ -495,13 +447,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             numbers_list = [line.strip() for line in content.split("\n") if line.strip()]
             docs = [{"service_name": state_data["service"], "country": state_data["country"], "phone_number": num, "status": "Available"} for num in numbers_list]
-            await numbers_col.insert_many(docs)
+            if docs:
+                await numbers_col.insert_many(docs)
             del ADMIN_UPLOAD_STATE[user_id]
             
             await update.message.reply_text(f"🎉 ফাইল থেকে সফলভাবে {len(numbers_list)}টি নাম্বার যুক্ত হয়েছে!", reply_markup=admin_panel_keyboard())
             return
 
-    # --- Main Menu Options ---
     if text == "/start":
         await start(update, context)
         
@@ -515,10 +467,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif text == "🔎 SEARCH NUMBER":
         USER_SEARCH_STATE[user_id] = True
-        await update.message.reply_text("🔎 **Search Number**\n\nদয়া করে কান্ট্রি কোড বা সিরিয়াল নাম্বার লিখে পাঠান (যেমন: `223` বা `22357`):", parse_mode="Markdown", reply_markup=back_keyboard())
+        await update.message.reply_text("🔎 **Search Number**\n\nদয়া করে কান্ট্রি কোড বা সিরিয়াল নাম্বার লিখে পাঠান (যেমন: `223` বা `22357`):", parse_mode="Markdown", reply_markup=back_keyword())
         
     elif text == "🚦 TRAFFIC":
-        await update.message.reply_text(f"🚦 সিস্টেমের বর্তমান ট্রাফিক স্বাভাবিক আছে।\n\nঅফিশিয়াল আপডেট: {UPDATE_CHANNEL_URL}", parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
+        await update.message.reply_text(f"🚦 সিস্টেমের বর্তমান ট্রাফিক স্বাভাবিক আছে。\n\nঅফিশিয়াল আপডেট: {UPDATE_CHANNEL_URL}", parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
         
     elif text == "👥 REFERRAL":
         bot_username = context.bot.username
@@ -568,10 +520,9 @@ async def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     application.add_handler(MessageHandler(filters.Document.ALL, message_handler))
     
-    # ওটিপি গ্রুপ বা যেকোনো চ্যাট থেকে মেসেজ ট্র্যাক করার হ্যান্ডলার
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, otp_group_listener))
 
-    print("Zentrix Bot is running with Balance & OTP Tracking...")
+    print("Zentrix Bot is running successfully...")
     
     async def main_runner():
         await application.initialize()
