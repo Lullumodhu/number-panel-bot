@@ -30,7 +30,6 @@ UPDATE_CHANNEL_URL = "https://t.me/Zentrix_Update"
 UPDATE_CHANNEL_ID = "@Zentrix_Update"
 
 OTP_GROUP_URL = "https://t.me/+pBpZWtQC4qswODI1"
-ADMIN_WITHDRAW_GROUP_ID = "-100mjyvnkkFvcQ5ODQ1"
 SUPPORT_URL = "https://t.me/ranaXvou"
 
 ADMIN_UPLOAD_STATE = {}
@@ -63,7 +62,7 @@ async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
             pass
     return True
 
-# --- Reply Keyboards ---
+# --- Reply Keyboards (Normal Users) ---
 def main_menu_keyboard(user_id: int):
     keyboard = [
         [KeyboardButton("📱 GET NUMBER"), KeyboardButton("🔎 SEARCH NUMBER")],
@@ -77,14 +76,17 @@ def main_menu_keyboard(user_id: int):
 def back_keyboard():
     return ReplyKeyboardMarkup([[KeyboardButton("🔙 Back")]], resize_keyboard=True)
 
-def admin_panel_keyboard():
+# --- Admin Inline Panel Keyboard ---
+def admin_inline_panel():
     keyboard = [
-        [KeyboardButton("📊 Overview"), KeyboardButton("📢 Broadcast")],
-        [KeyboardButton("⚙️ Number Management"), KeyboardButton("🚦 Traffic Settings")],
-        [KeyboardButton("⚙️ Price & Ref Settings"), KeyboardButton("👥 User Management")],
-        [KeyboardButton("🔙 Back")]
+        [InlineKeyboardButton("📊 Database Overview", callback_data="adm_overview")],
+        [InlineKeyboardButton("🏆 Leaderboard System", callback_data="adm_leaderboard")],
+        [InlineKeyboardButton("📤 Upload Number", callback_data="adm_upload"), InlineKeyboardButton("🗑️ Delete Files", callback_data="adm_delete")],
+        [InlineKeyboardButton("📢 Broadcast System", callback_data="adm_broadcast")],
+        [InlineKeyboardButton("📱 Used Numbers", callback_data="adm_used"), InlineKeyboardButton("📲 Unused Numbers", callback_data="adm_unused")],
+        [InlineKeyboardButton("❌ Close Panel", callback_data="adm_close")]
     ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    return InlineKeyboardMarkup(keyboard)
 
 # --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -179,7 +181,82 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await context.bot.send_message(chat_id=user_id, text=welcome_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
         else:
-            await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন।", show_alert=True)
+            await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়en করুন।", show_alert=True)
+
+    # --- Admin Inline Panel Actions ---
+    elif query.data == "adm_overview" and user_id == OWNER_ID:
+        await query.answer()
+        total_users = await users_col.count_documents({})
+        total_numbers = await numbers_col.count_documents({})
+        available_numbers = await numbers_col.count_documents({"status": "Available"})
+        assigned_numbers = await numbers_col.count_documents({"status": "Assigned"})
+        used_numbers = await numbers_col.count_documents({"status": "Used"})
+        
+        # Count unique uploaded files/batches if stored or distinct service/country pairs
+        pipeline = [{"$group": {"_id": {"service": "$service_name", "country": "$country"}}}]
+        files_cursor = numbers_col.aggregate(pipeline)
+        files_list = await files_cursor.to_list(length=1000)
+        total_files = len(files_list)
+
+        text = (
+            f"📊 **Database Overview & Statistics**\n\n"
+            f"👥 **Total Users:** `{total_users}`\n"
+            f"📂 **Total Files/Batches Added:** `{total_files}`\n"
+            f"📱 **Total Numbers:** `{total_numbers}`\n"
+            f"🟢 **Available Numbers:** `{available_numbers}`\n"
+            f"🔄 **Assigned Numbers:** `{assigned_numbers}`\n"
+            f"🔴 **Used Numbers:** `{used_numbers}`"
+        )
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="adm_back")]])
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+
+    elif query.data == "adm_leaderboard" and user_id == OWNER_ID:
+        await query.answer()
+        text = "🏆 **Leaderboard System**\n\n(এই ফিচারটির কার্যকারিতা শীঘ্রই যুক্ত করা হবে।)"
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="adm_back")]])
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+
+    elif query.data == "adm_upload" and user_id == OWNER_ID:
+        await query.answer()
+        ADMIN_UPLOAD_STATE[user_id] = {"step": "GET_SERVICE"}
+        await query.message.edit_text("⚙️ কোন সার্ভিসের নাম্বার আপলোড করবেন সেই নাম লিখে পাঠান (যেমন: Facebook):", parse_mode="Markdown")
+
+    elif query.data == "adm_delete" and user_id == OWNER_ID:
+        await query.answer()
+        text = "🗑️ **Delete Files / Numbers**\n\n(এই অপশনের কাজ পরবর্তীতে সেটআপ করে দেওয়া হবে।)"
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="adm_back")]])
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+
+    elif query.data == "adm_broadcast" and user_id == OWNER_ID:
+        await query.answer()
+        text = "📢 **Broadcast System**\n\n(ব্রডকাস্ট সিস্টেমের কাজ পরবর্তীতে সেটআপ করা হবে।)"
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="adm_back")]])
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+
+    elif query.data == "adm_used" and user_id == OWNER_ID:
+        await query.answer()
+        count = await numbers_col.count_documents({"status": "Used"})
+        text = f"📱 **Used Numbers Summary**\n\nমোট ব্যবহৃত (Used) নাম্বারের সংখ্যা: `{count}`"
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="adm_back")]])
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+
+    elif query.data == "adm_unused" and user_id == OWNER_ID:
+        await query.answer()
+        count = await numbers_col.count_documents({"status": "Available"})
+        text = f"📲 **Unused/Available Numbers Summary**\n\nমোট অব্যবহৃত (Unused/Available) নাম্বারের সংখ্যা: `{count}`"
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="adm_back")]])
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+
+    elif query.data == "adm_close" and user_id == OWNER_ID:
+        await query.answer("প্যানেল বন্ধ করা হয়েছে।")
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+
+    elif query.data == "adm_back" and user_id == OWNER_ID:
+        await query.answer()
+        await query.message.edit_text("👑 **Admin Control Panel**\n\nনিচের অপশনগুলো থেকে সিলেক্ট করুন:", parse_mode="Markdown", reply_markup=admin_inline_panel())
 
     elif query.data == "refresh_traffic":
         await query.answer("🔄 ট্রাফিক রিফ্রেশ করা হয়েছে!")
@@ -345,49 +422,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await query.message.edit_text(balance_text, parse_mode="Markdown", reply_markup=keyboard)
 
-    elif query.data.startswith("set_traf:"):
-        if user_id != OWNER_ID:
-            await query.answer("❌ আপনার এই পার্মিশন নেই!", show_alert=True)
-            return
-        
-        _, country, status = query.data.split(":", 2)
-        icons = {"HIGH": "🟢", "MEDIUM": "🟡", "LOW": "🔴"}
-        icon = icons.get(status, "⚪")
-        
-        await traffic_col.update_one(
-            {"country": country},
-            {"$set": {"status": status, "icon": icon}},
-            upsert=True
-        )
-        await query.answer(f"✅ {country} এর ট্রাফিক {status} করা হয়েছে!")
-        
-        traffic_list = await traffic_col.find({}).to_list(length=100)
-        keyboard = []
-        for item in traffic_list:
-            c = item['country']
-            keyboard.append([
-                InlineKeyboardButton(f"{c} [{item['status']}]", callback_data="noop"),
-                InlineKeyboardButton("🟢", callback_data=f"set_traf:{c}:HIGH"),
-                InlineKeyboardButton("🟡", callback_data=f"set_traf:{c}:MEDIUM"),
-                InlineKeyboardButton("🔴", callback_data=f"set_traf:{c}:LOW"),
-            ])
-        keyboard.append([InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")])
-        
-        try:
-            await query.message.edit_text("🚦 **Traffic Status Management**\n\nনিচ থেকে যেকোনো কান্ট্রির ট্রাফিক স্ট্যাটাস পরিবর্তন করুন:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-        except Exception:
-            pass
-
-    elif query.data == "admin_back":
-        if user_id != OWNER_ID:
-            return
-        await query.answer()
-        try:
-            await query.message.edit_text("👑 **Admin Control Panel**", parse_mode="Markdown")
-            await context.bot.send_message(chat_id=user_id, text="👑 **Admin Control Panel**", reply_markup=admin_panel_keyboard())
-        except Exception:
-            pass
-
     elif query.data in ["get_stock_click", "get_number_menu"]:
         await query.answer()
         services = await numbers_col.distinct("service_name", {"status": "Available"})
@@ -541,6 +575,9 @@ async def otp_group_listener(update: Update, context: ContextTypes.DEFAULT_TYPE)
             user_id = assigned_doc["user_id"]
             service = assigned_doc["service_name"]
             
+            # Mark number as Used when OTP arrives
+            await numbers_col.update_one({"phone_number": phone}, {"$set": {"status": "Used"}})
+            
             await users_col.update_one(
                 {"user_id": user_id},
                 {"$inc": {"balance": current_otp_rate, "total_earned": current_otp_rate}}
@@ -655,23 +692,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ দয়া করে সঠিক সংখ্যা লিখুন:", reply_markup=back_keyboard())
                 return
 
-    # Admin Settings State (OTP Rate / Ref Bonus)
-    if user_id == OWNER_ID and user_id in ADMIN_SETTINGS_STATE:
-        step = ADMIN_SETTINGS_STATE[user_id].get("step")
-        try:
-            val = float(text.strip())
-            if step == "SET_OTP_RATE":
-                await set_setting("otp_rate", val)
-                await update.message.reply_text(f"✅ সফলভাবে প্রতি OTP প্রাইস আপডেট করা হয়েছে: `{val}৳`", parse_mode="Markdown", reply_markup=admin_panel_keyboard())
-            elif step == "SET_REF_BONUS":
-                await set_setting("ref_bonus", val)
-                await update.message.reply_text(f"✅ সফলভাবে পার রেফার বোনাস আপডেট করা হয়েছে: `{val}৳`", parse_mode="Markdown", reply_markup=admin_panel_keyboard())
-        except ValueError:
-            await update.message.reply_text("❌ দয়া করে সঠিক সংখ্যা (Number) দিন (যেমন: 0.60 বা 0.01):", reply_markup=back_keyboard())
-            return
-        del ADMIN_SETTINGS_STATE[user_id]
-        return
-
     if user_id in USER_SEARCH_STATE:
         prefix = text.strip()
         del USER_SEARCH_STATE[user_id]
@@ -753,7 +773,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             del ADMIN_UPLOAD_STATE[user_id]
             
-            await update.message.reply_text(f"🎉 সফলভাবে {len(numbers_list)}টি নাম্বার যুক্ত হয়েছে এবং ট্রাফিক লিস্টে আপডেট হয়েছে!", reply_markup=admin_panel_keyboard())
+            await update.message.reply_text(f"🎉 সফলভাবে {len(numbers_list)}টি নাম্বার যুক্ত হয়েছে!", reply_markup=main_menu_keyboard(user_id))
             return
 
     if user_id == OWNER_ID and update.message.document and user_id in ADMIN_UPLOAD_STATE:
@@ -782,7 +802,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             del ADMIN_UPLOAD_STATE[user_id]
             
-            await update.message.reply_text(f"🎉 ফাইল থেকে সফলভাবে {len(numbers_list)}টি নাম্বার যুক্ত হয়েছে!", reply_markup=admin_panel_keyboard())
+            await update.message.reply_text(f"🎉 ফাইল থেকে সফলভাবে {len(numbers_list)}টি নাম্বার যুক্ত হয়েছে!", reply_markup=main_menu_keyboard(user_id))
             return
 
     if text == "/start":
@@ -846,7 +866,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "🆘 SUPPORT":
         support_text = (
             f"🆘 **SUPPORT & HELP DESK**\n\n"
-            f"যেকোনো প্রয়োজনে সরাসরি আমাদের অফিসিয়াল অ্যাডমিনের সাথে যোগাযোগ করুন অথবা চ্যানেল ও গ্রুপে যুক্ত থাকুন।\n\n"
+            f"যেকোনো প্রয়োজনে সরাসরি আমাদের অফিসিয়াল অ্যাডমিনের সাথে যোগাযোগ করুন অথবা চ্যানেল ও গ্রুপে যুক্ত থাকুনন্য।\n\n"
             f"👑 **Admin Support:** [Click Here to Message]({SUPPORT_URL})"
         )
         keyboard = [
@@ -856,47 +876,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(support_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
         
     elif text == "👑 ADMIN PANEL" and user_id == OWNER_ID:
-        await update.message.reply_text("👑 **Admin Control Panel**", parse_mode="Markdown", reply_markup=admin_panel_keyboard())
-        
-    elif text == "📊 Overview" and user_id == OWNER_ID:
-        total_users = await users_col.count_documents({})
-        total_nums = await numbers_col.count_documents({"status": "Available"})
-        curr_rate = await get_setting("otp_rate", 0.60)
-        curr_ref = await get_setting("ref_bonus", 0.01)
-        await update.message.reply_text(f"📊 **Overview**\n👥 Users: `{total_users}`\n📱 Stock: `{total_nums}`\n💵 OTP Rate: `{curr_rate}৳`\n🎁 Ref Bonus: `{curr_ref}৳`", parse_mode="Markdown", reply_markup=admin_panel_keyboard())
-        
-    elif text == "⚙️ Number Management" and user_id == OWNER_ID:
-        ADMIN_UPLOAD_STATE[user_id] = {"step": "GET_SERVICE"}
-        await update.message.reply_text("⚙️ কোন সার্ভিসের নাম্বার আপলোড করবেন নাম লিখুন (যেমন: Facebook):", parse_mode="Markdown", reply_markup=back_keyboard())
-
-    elif text == "⚙️ Price & Ref Settings" and user_id == OWNER_ID:
-        curr_rate = await get_setting("otp_rate", 0.60)
-        curr_ref = await get_setting("ref_bonus", 0.01)
-        keyboard = [
-            [InlineKeyboardButton(f"Change OTP Rate (Current: {curr_rate}৳)", callback_data="set_opt_rate_menu")],
-            [InlineKeyboardButton(f"Change Ref Bonus (Current: {curr_ref}৳)", callback_data="set_ref_bonus_menu")],
-            [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")]
-        ]
-        await update.message.reply_text("⚙️ **Price & Referral Settings**\n\nনিচ থেকে কী পরিবর্তন করতে চান সিলেক্ট করুন:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif text == "🚦 Traffic Settings" and user_id == OWNER_ID:
-        traffic_list = await traffic_col.find({}).to_list(length=100)
-        if not traffic_list:
-            await update.message.reply_text("⚠️ বর্তমানে কোনো কান্ট্রি বা ট্রাফিক ডাটা নেই। আগে নাম্বার আপলোড করুন।", reply_markup=admin_panel_keyboard())
-            return
-            
-        keyboard = []
-        for item in traffic_list:
-            c = item['country']
-            keyboard.append([
-                InlineKeyboardButton(f"{c} [{item['status']}]", callback_data="noop"),
-                InlineKeyboardButton("🟢", callback_data=f"set_traf:{c}:HIGH"),
-                InlineKeyboardButton("🟡", callback_data=f"set_traf:{c}:MEDIUM"),
-                InlineKeyboardButton("🔴", callback_data=f"set_traf:{c}:LOW"),
-            ])
-        keyboard.append([InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")])
-        
-        await update.message.reply_text("🚦 **Traffic Status Management**\n\nনিচ থেকে যেকোনো কান্ট্রির ট্রাফিক স্ট্যাটাস পরিবর্তন করুন:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.message.reply_text(
+            "👑 **Admin Control Panel**\n\nনিচের অপশনগুলো থেকে সিলেক্ট করুন:",
+            parse_mode="Markdown",
+            reply_markup=admin_inline_panel()
+        )
         
     else:
         if user_id == OWNER_ID and text == "":
@@ -904,32 +888,19 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif not update.message.document and not any(user_id in d for d in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE]):
             await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন।", reply_markup=main_menu_keyboard(user_id))
 
-async def extra_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user_id = query.from_user.id
-    if query.data == "set_opt_rate_menu" and user_id == OWNER_ID:
-        await query.answer()
-        ADMIN_SETTINGS_STATE[user_id] = {"step": "SET_OTP_RATE"}
-        await query.message.reply_text("💵 নতুন প্রতি OTP প্রাইস (যেমন: `0.60` বা `1.00`) লিখে পাঠান:", parse_mode="Markdown", reply_markup=back_keyboard())
-    elif query.data == "set_ref_bonus_menu" and user_id == OWNER_ID:
-        await query.answer()
-        ADMIN_SETTINGS_STATE[user_id] = {"step": "SET_REF_BONUS"}
-        await query.message.reply_text("🎁 নতুন পার রেফার বোনাস (যেমন: `0.01` বা `0.05`) লিখে পাঠান:", parse_mode="Markdown", reply_markup=back_keyboard())
-
 async def main():
     application = Application.builder().token(BOT_TOKEN).build()
 
     await application.bot.set_my_commands([BotCommand("start", "Start the bot")])
 
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(extra_callbacks, pattern="^(set_opt_rate_menu|set_ref_bonus_menu)$"))
     application.add_handler(CallbackQueryHandler(callback_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     application.add_handler(MessageHandler(filters.Document.ALL, message_handler))
     
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, otp_group_listener))
 
-    print("Zentrix Bot is running successfully with Withdrawal System...")
+    print("Zentrix Bot is running successfully with Inline Admin Panel...")
     
     async def main_runner():
         await application.initialize()
