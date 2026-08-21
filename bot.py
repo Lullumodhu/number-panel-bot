@@ -19,6 +19,7 @@ users_col = db.users
 numbers_col = db.numbers
 assigned_col = db.assigned_numbers
 traffic_col = db.traffic
+settings_col = db.settings
 
 # --- Permanent Links & Info ---
 MAIN_CHANNEL_URL = "https://t.me/Zentrix_Officiall"
@@ -29,10 +30,21 @@ UPDATE_CHANNEL_ID = "@Zentrix_Update"
 
 OTP_GROUP_URL = "https://t.me/+pBpZWtQC4qswODI1"
 SUPPORT_ADMIN = "@ranaXvou"
-DEFAULT_OTP_RATE = 0.60
+SUPPORT_URL = "https://t.me/ranaXvou"
 
 ADMIN_UPLOAD_STATE = {}
 USER_SEARCH_STATE = {}
+ADMIN_SETTINGS_STATE = {}
+
+# --- Dynamic Settings Getter/Setter ---
+async def get_setting(key, default_val):
+    res = await settings_col.find_one({"_id": key})
+    if res and "value" in res:
+        return res["value"]
+    return default_val
+
+async def set_setting(key, val):
+    await settings_col.update_one({"_id": key}, {"$set": {"value": val}}, upsert=True)
 
 # --- Force Join Check Function ---
 async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -67,7 +79,8 @@ def admin_panel_keyboard():
     keyboard = [
         [KeyboardButton("📊 Overview"), KeyboardButton("📢 Broadcast")],
         [KeyboardButton("⚙️ Number Management"), KeyboardButton("🚦 Traffic Settings")],
-        [KeyboardButton("👥 User Management"), KeyboardButton("🔙 Back")]
+        [KeyboardButton("⚙️ Price & Ref Settings"), KeyboardButton("👥 User Management")],
+        [KeyboardButton("🔙 Back")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -79,12 +92,45 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         del ADMIN_UPLOAD_STATE[user.id]
     if user.id in USER_SEARCH_STATE:
         del USER_SEARCH_STATE[user.id]
+    if user.id in ADMIN_SETTINGS_STATE:
+        del ADMIN_SETTINGS_STATE[user.id]
 
-    await users_col.update_one(
-        {"user_id": user.id},
-        {"$set": {"username": user.username}, "$setOnInsert": {"balance": 0.0, "total_earned": 0.0}},
-        upsert=True
-    )
+    # Referral check on start
+    args = context.args
+    referrer_id = None
+    if args and args[0].isdigit():
+        ref_id = int(args[0])
+        if ref_id != user.id:
+            referrer_id = ref_id
+
+    existing_user = await users_col.find_one({"user_id": user.id})
+    if not existing_user:
+        ref_bonus = float(await get_setting("ref_bonus", 0.01))
+        await users_col.insert_one({
+            "user_id": user.id,
+            "username": user.username,
+            "balance": 0.0,
+            "total_earned": 0.0,
+            "referred_by": referrer_id
+        })
+        if referrer_id:
+            await users_col.update_one(
+                {"user_id": referrer_id},
+                {"$inc": {"balance": ref_bonus, "total_earned": ref_bonus}}
+            )
+            try:
+                await context.bot.send_message(
+                    chat_id=referrer_id,
+                    text=f"🎉 **New Referral!**\n\nআপনার লিংকের মাধ্যমে একজন নতুন ইউজার জয়েন করেছে এবং আপনি বোনাস পেয়েছেন: `+{ref_bonus}৳`",
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+    else:
+        await users_col.update_one(
+            {"user_id": user.id},
+            {"$set": {"username": user.username}}
+        )
 
     is_joined = await check_force_join(user.id, context)
     if not is_joined:
@@ -127,12 +173,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
                 
             user = query.from_user
-            await users_col.update_one(
-                {"user_id": user.id},
-                {"$set": {"username": user.username}, "$setOnInsert": {"balance": 0.0, "total_earned": 0.0}},
-                upsert=True
-            )
-            
             welcome_text = (
                 f"🌐 **NUMBER PANEL**\n\n"
                 f"👋 Welcome, **{user.first_name}**\n"
@@ -145,13 +185,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data == "refresh_traffic":
         await query.answer("🔄 ট্রাফিক রিফ্রেশ করা হয়েছে!")
-        traffic_cursor = traffic_col.find({})
-        traffic_list = await traffic_cursor.to_list(length=100)
+        traffic_list = await traffic_col.find({}).to_list(length=100)
         
         if not traffic_list:
             text = "📊 বর্তমানে কোনো ট্রাফিক আপডেট নেই।"
         else:
-            text = "🚦 **30 MINUTE LIVE TRAFFIC**\n\n"
+            text = "🚦 **1 HOUR LIVE TRAFFIC**\n\n"
             for item in traffic_list:
                 text += f"🌍 **{item['service']}**\n{item['country']} : {item['status']} {item['icon']}\n\n"
         
@@ -177,33 +216,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.answer(f"✅ {country} এর ট্রাফিক {status} করা হয়েছে!")
         
-        # প্যানেল আপডেট করা
         traffic_list = await traffic_col.find({}).to_list(length=100)
-        keyboard = []
-        for item in traffic_list:
-            c = item['country']
-            keyboard.append([
-                InlineKeyboardButton(f"{c} [{item['status']}]", callback_data="noop"),
-                InlineKeyboardButton("🟢", callback_data=f"set_traf:{c}:HIGH"),
-                InlineKeyboardButton("🟡", callback_data=f"set_traf:{c}:MEDIUM"),
-                InlineKeyboardButton("🔴", callback_data=f"set_traf:{c}:LOW"),
-            ])
-        keyboard.append([InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")])
-        
-        try:
-            await query.message.edit_text("🚦 **Traffic Status Management**\n\nনিচ থেকে যেকোনো কান্ট্রির ট্রাফিক স্ট্যাটাস পরিবর্তন করুন:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-        except Exception:
-            pass
-
-    elif query.data == "admin_traffic_panel":
-        if user_id != OWNER_ID:
-            return
-        await query.answer()
-        traffic_list = await traffic_col.find({}).to_list(length=100)
-        if not traffic_list:
-            await query.message.edit_text("⚠️ কোনো কান্ট্রি বা ডাটা পাওয়া যায়নি। আগে নাম্বার আপলোড করুন।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_back")]]))
-            return
-            
         keyboard = []
         for item in traffic_list:
             c = item['country']
@@ -279,6 +292,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }).limit(2)
         
         numbers = await cursor.to_list(length=2)
+        current_otp_rate = float(await get_setting("otp_rate", 0.60))
         
         if numbers:
             num_ids = [doc["_id"] for doc in numbers]
@@ -294,7 +308,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             text_msg = (
                 f"🇲🇱 {country} Allocated 💬 {service_name}\n"
-                f"🔗 Otp Rate : {DEFAULT_OTP_RATE}৳\n"
+                f"🔗 Otp Rate : {current_otp_rate}৳\n"
                 f"⏳ Waiting for OTP...... ⬇️"
             )
             
@@ -306,7 +320,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard.append([InlineKeyboardButton("🔄 Change Number", callback_data=f"change_num:{service_name}:{country}")])
             keyboard.append([
                 InlineKeyboardButton("🌍 Other Countries", callback_data=f"sel_serv:{service_name}"),
-                InlineKeyboardButton("🌐 OTP", url=OTP_GROUP_URL)
+                InlineKeyboardButton("🌐 OTP Group", url=OTP_GROUP_URL)
             ])
             reply_markup = InlineKeyboardMarkup(keyboard)
         else:
@@ -374,6 +388,8 @@ async def otp_group_listener(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     
     text = message.text
+    current_otp_rate = float(await get_setting("otp_rate", 0.60))
+
     async for assigned_doc in assigned_col.find({}):
         phone = assigned_doc["phone_number"]
         if phone in text:
@@ -382,14 +398,14 @@ async def otp_group_listener(update: Update, context: ContextTypes.DEFAULT_TYPE)
             
             await users_col.update_one(
                 {"user_id": user_id},
-                {"$inc": {"balance": DEFAULT_OTP_RATE, "total_earned": DEFAULT_OTP_RATE}}
+                {"$inc": {"balance": current_otp_rate, "total_earned": current_otp_rate}}
             )
             
             user_msg = (
                 f"🇲🇱 #ML `{phone}` English\n"
                 f"📥 **OTP Received!**\n\n"
                 f"💬 `{text}`\n\n"
-                f"💵 Added to Balance: `+{DEFAULT_OTP_RATE}৳`"
+                f"💵 Added to Balance: `+{current_otp_rate}৳`"
             )
             
             keyboard = InlineKeyboardMarkup([
@@ -419,11 +435,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "🔙 Back":
         if user_id in ADMIN_UPLOAD_STATE:
             del ADMIN_UPLOAD_STATE[user_id]
-            if user_id == OWNER_ID:
-                await update.message.reply_text("👑 **Admin Control Panel**", parse_mode="Markdown", reply_markup=admin_panel_keyboard())
-                return
         if user_id in USER_SEARCH_STATE:
             del USER_SEARCH_STATE[user_id]
+        if user_id in ADMIN_SETTINGS_STATE:
+            del ADMIN_SETTINGS_STATE[user_id]
+            
+        if user_id == OWNER_ID:
+            await update.message.reply_text("👑 **Admin Control Panel**", parse_mode="Markdown", reply_markup=admin_panel_keyboard())
+            return
         
         await update.message.reply_text("👇 Main Menu:", reply_markup=main_menu_keyboard(user_id))
         return
@@ -440,6 +459,23 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚠️ আপনি চ্যানেল বা গ্রুপ থেকে লিভ নিয়েছেন!\nবট ব্যবহার করতে হলে আবার জয়েন করে **'Joined / Check'** বাটনে চাপুন:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
+        return
+
+    # Admin Settings State (OTP Rate / Ref Bonus)
+    if user_id == OWNER_ID and user_id in ADMIN_SETTINGS_STATE:
+        step = ADMIN_SETTINGS_STATE[user_id].get("step")
+        try:
+            val = float(text.strip())
+            if step == "SET_OTP_RATE":
+                await set_setting("otp_rate", val)
+                await update.message.reply_text(f"✅ সফলভাবে প্রতি OTP প্রাইস আপডেট করা হয়েছে: `{val}৳`", parse_mode="Markdown", reply_markup=admin_panel_keyboard())
+            elif step == "SET_REF_BONUS":
+                await set_setting("ref_bonus", val)
+                await update.message.reply_text(f"✅ সফলভাবে পার রেফার বোনাস আপডেট করা হয়েছে: `{val}৳`", parse_mode="Markdown", reply_markup=admin_panel_keyboard())
+        except ValueError:
+            await update.message.reply_text("❌ দয়া করে সঠিক সংখ্যা (Number) দিন (যেমন: 0.60 বা 0.01):", reply_markup=back_keyboard())
+            return
+        del ADMIN_SETTINGS_STATE[user_id]
         return
 
     if user_id in USER_SEARCH_STATE:
@@ -516,7 +552,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             docs = [{"service_name": service_name, "country": country, "phone_number": num, "status": "Available"} for num in numbers_list]
             if docs:
                 await numbers_col.insert_many(docs)
-                # অটো ট্রাফিক লিস্টে যুক্ত করা (ডিফল্ট MEDIUM)
                 await traffic_col.update_one(
                     {"country": country, "service": service_name},
                     {"$setOnInsert": {"status": "MEDIUM", "icon": "🟡"}},
@@ -546,7 +581,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             docs = [{"service_name": service_name, "country": country, "phone_number": num, "status": "Available"} for num in numbers_list]
             if docs:
                 await numbers_col.insert_many(docs)
-                # অটো ট্রাফিক লিস্টে যুক্ত করা
                 await traffic_col.update_one(
                     {"country": country, "service": service_name},
                     {"$setOnInsert": {"status": "MEDIUM", "icon": "🟡"}},
@@ -570,14 +604,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif text == "🔎 SEARCH NUMBER":
         USER_SEARCH_STATE[user_id] = True
-        await update.message.reply_text("🔎 **Search Number**\n\nদয়া করে কান্ট্রি কোড বা সিরিয়াল নাম্বার লিখে পাঠান (যেমন: `223` বা `22357`):", parse_mode="Markdown", reply_markup=back_keyword())
+        await update.message.reply_text("🔎 **Search Number**\n\nদয়া করে কান্ট্রি কোড বা সিরিয়াল নাম্বার লিখে পাঠান (যেমন: `223` বা `22357`):", parse_mode="Markdown", reply_markup=back_keyboard())
         
     elif text == "🚦 TRAFFIC":
         traffic_list = await traffic_col.find({}).to_list(length=100)
         if not traffic_list:
             traffic_text = "📊 বর্তমানে কোনো লাইভ ট্রাফিক ডাটা নেই।"
         else:
-            traffic_text = "🚦 **30 MINUTE LIVE TRAFFIC**\n\n"
+            traffic_text = "🚦 **1 HOUR LIVE TRAFFIC**\n\n"
             for item in traffic_list:
                 traffic_text += f"🌍 **{item['service']}**\n{item['country']} : {item['status']} {item['icon']}\n\n"
         
@@ -587,24 +621,42 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "👥 REFERRAL":
         bot_username = context.bot.username
         ref_link = f"https://t.me/{bot_username}?start={user_id}"
-        await update.message.reply_text(f"👥 **Referral System**\n\nআপনার রেফাল লিংক:\n`{ref_link}`", parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
+        ref_bonus = await get_setting("ref_bonus", 0.01)
+        ref_text = (
+            f"👥 **Referral & Earn Program**\n\n"
+            f"আপনার বন্ধুদের আমাদের বটে ইনভাইট করুন এবং আকর্ষণীয় ক্যাশ বোনাস আর্ন করুন!\n\n"
+            f"🎁 **Per Referral Bonus:** `{ref_bonus}৳`\n\n"
+            f"🔗 **আপনার রেফাল লিংক:**\n`{ref_link}`\n\n"
+            f"💡 *লিংকটি কপি করে শেয়ার করুন এবং আপনার ব্যালেন্স বাড়ান!*"
+        )
+        await update.message.reply_text(ref_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
         
     elif text == "💰 BALANCE":
         user_data = await users_col.find_one({"user_id": user_id})
         balance = user_data.get("balance", 0.0) if user_data else 0.0
         total_earned = user_data.get("total_earned", 0.0) if user_data else 0.0
+        current_otp_rate = await get_setting("otp_rate", 0.60)
         
         balance_text = (
             f"👤 **User Account Dashboard**\n\n"
             f"💰 Current Balance : `{balance:.2f}৳`\n"
             f"📈 Total Earned : `{total_earned:.2f}৳`\n"
             f"💸 Withdrawal Status : `Active`\n\n"
-            f"⚡ Earn per OTP: `{DEFAULT_OTP_RATE}৳`"
+            f"⚡ Earn per OTP: `{current_otp_rate}৳`"
         )
         await update.message.reply_text(balance_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
         
     elif text == "🆘 SUPPORT":
-        await update.message.reply_text(f"🆘 যোগাযোগ করুন:\n👤 Admin: {SUPPORT_ADMIN}\n💬 Group: {OTP_GROUP_URL}", parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
+        support_text = (
+            f"🆘 **SUPPORT & HELP DESK**\n\n"
+            f"যেকোনো প্রয়োজনে সরাসরি আমাদের অফিসিয়াল অ্যাডমিনের সাথে যোগাযোগ করুন অথবা চ্যানেল ও গ্রুপে যুক্ত থাকুন।\n\n"
+            f"👑 **Admin Support:** [Click Here to Message]({SUPPORT_URL})"
+        )
+        keyboard = [
+            [InlineKeyboardButton("📢 Main Channel", url=MAIN_CHANNEL_URL), InlineKeyboardButton("📢 Update Channel", url=UPDATE_CHANNEL_URL)],
+            [InlineKeyboardButton("💬 OTP Group", url=OTP_GROUP_URL)]
+        ]
+        await update.message.reply_text(support_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
         
     elif text == "👑 ADMIN PANEL" and user_id == OWNER_ID:
         await update.message.reply_text("👑 **Admin Control Panel**", parse_mode="Markdown", reply_markup=admin_panel_keyboard())
@@ -612,11 +664,23 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "📊 Overview" and user_id == OWNER_ID:
         total_users = await users_col.count_documents({})
         total_nums = await numbers_col.count_documents({"status": "Available"})
-        await update.message.reply_text(f"📊 **Overview**\n👥 Users: `{total_users}`\n📱 Stock: `{total_nums}`", parse_mode="Markdown", reply_markup=admin_panel_keyboard())
+        curr_rate = await get_setting("otp_rate", 0.60)
+        curr_ref = await get_setting("ref_bonus", 0.01)
+        await update.message.reply_text(f"📊 **Overview**\n👥 Users: `{total_users}`\n📱 Stock: `{total_nums}`\n💵 OTP Rate: `{curr_rate}৳`\n🎁 Ref Bonus: `{curr_ref}৳`", parse_mode="Markdown", reply_markup=admin_panel_keyboard())
         
     elif text == "⚙️ Number Management" and user_id == OWNER_ID:
         ADMIN_UPLOAD_STATE[user_id] = {"step": "GET_SERVICE"}
         await update.message.reply_text("⚙️ কোন সার্ভিসের নাম্বার আপলোড করবেন নাম লিখুন (যেমন: Facebook):", parse_mode="Markdown", reply_markup=back_keyboard())
+
+    elif text == "⚙️ Price & Ref Settings" and user_id == OWNER_ID:
+        curr_rate = await get_setting("otp_rate", 0.60)
+        curr_ref = await get_setting("ref_bonus", 0.01)
+        keyboard = [
+            [InlineKeyboardButton(f"Change OTP Rate (Current: {curr_rate}৳)", callback_data="set_opt_rate_menu")],
+            [InlineKeyboardButton(f"Change Ref Bonus (Current: {curr_ref}৳)", callback_data="set_ref_bonus_menu")],
+            [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")]
+        ]
+        await update.message.reply_text("⚙️ **Price & Referral Settings**\n\nনিচ থেকে কী পরিবর্তন করতে চান সিলেক্ট করুন:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif text == "🚦 Traffic Settings" and user_id == OWNER_ID:
         traffic_list = await traffic_col.find({}).to_list(length=100)
@@ -638,8 +702,24 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚦 **Traffic Status Management**\n\nনিচ থেকে যেকোনো কান্ট্রির ট্রাফিক স্ট্যাটাস পরিবর্তন করুন:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
         
     else:
-        if not update.message.document and user_id not in ADMIN_UPLOAD_STATE and user_id not in USER_SEARCH_STATE:
+        # Inline Callbacks for Settings change
+        if user_id == OWNER_ID and text == "":
+            pass
+        elif not update.message.document and user_id not in ADMIN_UPLOAD_STATE and user_id not in USER_SEARCH_STATE and user_id not in ADMIN_SETTINGS_STATE:
             await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন।", reply_markup=main_menu_keyboard(user_id))
+
+# Extra Callback queries for settings buttons
+async def extra_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    if query.data == "set_opt_rate_menu" and user_id == OWNER_ID:
+        await query.answer()
+        ADMIN_SETTINGS_STATE[user_id] = {"step": "SET_OTP_RATE"}
+        await query.message.reply_text("💵 নতুন প্রতি OTP প্রাইস (যেমন: `0.60` বা `1.00`) লিখে পাঠান:", parse_mode="Markdown", reply_markup=back_keyboard())
+    elif query.data == "set_ref_bonus_menu" and user_id == OWNER_ID:
+        await query.answer()
+        ADMIN_SETTINGS_STATE[user_id] = {"step": "SET_REF_BONUS"}
+        await query.message.reply_text("🎁 নতুন পার রেফার বোনাস (যেমন: `0.01` বা `0.05`) লিখে পাঠান:", parse_mode="Markdown", reply_markup=back_keyboard())
 
 async def main():
     application = Application.builder().token(BOT_TOKEN).build()
@@ -647,13 +727,14 @@ async def main():
     await application.bot.set_my_commands([BotCommand("start", "Start the bot")])
 
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(extra_callbacks, pattern="^(set_opt_rate_menu|set_ref_bonus_menu)$"))
     application.add_handler(CallbackQueryHandler(callback_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     application.add_handler(MessageHandler(filters.Document.ALL, message_handler))
     
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, otp_group_listener))
 
-    print("Zentrix Bot is running successfully with Traffic Panel...")
+    print("Zentrix Bot is running successfully with all advanced features...")
     
     async def main_runner():
         await application.initialize()
