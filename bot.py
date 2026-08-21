@@ -131,14 +131,10 @@ async def get_admin_panel_markup(user_id: int):
         f"নিচের অপশনগুলো থেকে সিলেক্ট করুন:"
     )
 
+    # মূল প্যানেলে নির্দিষ্ট ৫টি বাটন সরিয়ে শুধু '⚙️ System' এবং বাকিগুলো রাখা হয়েছে
     keyboard = [
         [InlineKeyboardButton("🏆 Leaderboard System", callback_data="adm_leaderboard")],
         [InlineKeyboardButton("⚙️ System", callback_data="adm_system_menu")],
-        [InlineKeyboardButton("👑 Admin Management", callback_data="adm_mgmt_menu")],
-        [InlineKeyboardButton("📢 Force Join System", callback_data="adm_fj_menu")],
-        [InlineKeyboardButton("👥 User Management", callback_data="adm_usermgmt_menu")],
-        [InlineKeyboardButton("💬 OTP Group Management", callback_data="adm_otpgroup_menu")],
-        [InlineKeyboardButton("🚀 X-Rony Control Panel", callback_data="adm_xrony_menu")],
         [InlineKeyboardButton("📤 Upload Number", callback_data="adm_upload"), InlineKeyboardButton("🗑️ Delete Files", callback_data="adm_delete")],
         [InlineKeyboardButton("📢 Broadcast System", callback_data="adm_broadcast")],
         [InlineKeyboardButton("❌ Close Panel", callback_data="adm_close")]
@@ -252,23 +248,21 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup = await build_main_menu(user_id)
             await context.bot.send_message(chat_id=user_id, text=welcome_text, parse_mode="Markdown", reply_markup=reply_markup)
         else:
-            await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন।", show_alert=True)
+            await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন。", show_alert=True)
 
-    # --- System Control Hub Menu (Second Image Option) ---
+    # --- System Control Hub Menu (যেখানে চাওয়া ৫টি বাটন যুক্ত করা হয়েছে) ---
     elif query.data == "adm_system_menu" and await is_admin(user_id):
         await query.answer()
         sys_text = "⚙️ **System Control Hub**\n\nনিচের অপশনগুলো থেকে ম্যানেজ করুন:"
         sys_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("StexSMS Control", callback_data="sys_stex"), InlineKeyboardButton("Voltx Control", callback_data="sys_voltx")],
-            [InlineKeyboardButton("Zenex Control", callback_data="sys_zenex"), InlineKeyboardButton("YE SMS Control", callback_data="sys_ye")],
-            # যদি সিস্টেম মেনুর ভেতরে নতুন কোনো কন্ট্রোল বা অপশন যোগ করতে চান, তা নিচে এই ফরম্যাটে যোগ করতে পারেন:
-            # [InlineKeyboardButton("New System Control", callback_data="sys_new")],
+            [InlineKeyboardButton("👑 Admin Management", callback_data="adm_mgmt_menu")],
+            [InlineKeyboardButton("📢 Force Join System", callback_data="adm_fj_menu")],
+            [InlineKeyboardButton("👥 User Management", callback_data="adm_usermgmt_menu")],
+            [InlineKeyboardButton("💬 OTP Group Management", callback_data="adm_otpgroup_menu")],
+            [InlineKeyboardButton("🚀 X-Rony Control Panel", callback_data="adm_xrony_menu")],
             [InlineKeyboardButton("🔙 Back", callback_data="adm_back")]
         ])
         await query.message.edit_text(sys_text, parse_mode="Markdown", reply_markup=sys_keyboard)
-
-    elif query.data.startswith("sys_") and await is_admin(user_id):
-        await query.answer("সিস্টেম মডিউল সক্রিয় আছে।", show_alert=True)
 
     # --- 1. Admin Management System ---
     elif query.data == "adm_mgmt_menu" and await is_admin(user_id):
@@ -283,7 +277,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = [
             [InlineKeyboardButton("➕ Add Admin", callback_data="adm_add_start"), InlineKeyboardButton("❌ Remove Admin", callback_data="adm_rem_list")],
-            [InlineKeyboardButton("🔙 Back to Panel", callback_data="adm_back")]
+            [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
         ]
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -319,7 +313,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"{idx}. ID: `{adm['user_id']}`\n"
         keyboard = [
             [InlineKeyboardButton("➕ Add Admin", callback_data="adm_add_start"), InlineKeyboardButton("❌ Remove Admin", callback_data="adm_rem_list")],
-            [InlineKeyboardButton("🔙 Back to Panel", callback_data="adm_back")]
+            [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
         ]
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -339,7 +333,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [InlineKeyboardButton("🟢 Turn ON", callback_data="set_fj:ON"), InlineKeyboardButton("🔴 Turn OFF", callback_data="set_fj:OFF")],
             [InlineKeyboardButton("➕ Add Channel", callback_data="fj_add_ch"), InlineKeyboardButton("🗑️ Delete Channel", callback_data="fj_del_ch_list")],
-            [InlineKeyboardButton("🔙 Back to Panel", callback_data="adm_back")]
+            [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
         ]
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -356,7 +350,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [InlineKeyboardButton("🟢 Turn ON", callback_data="set_fj:ON"), InlineKeyboardButton("🔴 Turn OFF", callback_data="set_fj:OFF")],
             [InlineKeyboardButton("➕ Add Channel", callback_data="fj_add_ch"), InlineKeyboardButton("🗑️ Delete Channel", callback_data="fj_del_ch_list")],
-            [InlineKeyboardButton("🔙 Back to Panel", callback_data="adm_back")]
+            [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
         ]
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -394,7 +388,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [InlineKeyboardButton("🟢 Turn ON", callback_data="set_fj:ON"), InlineKeyboardButton("🔴 Turn OFF", callback_data="set_fj:OFF")],
             [InlineKeyboardButton("➕ Add Channel", callback_data="fj_add_ch"), InlineKeyboardButton("🗑️ Delete Channel", callback_data="fj_del_ch_list")],
-            [InlineKeyboardButton("🔙 Back to Panel", callback_data="adm_back")]
+            [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
         ]
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -415,7 +409,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         keyboard = [
             [InlineKeyboardButton("💰 Manage Balance", callback_data="us_m_balance"), InlineKeyboardButton("🚫 Ban / Unban User", callback_data="us_m_ban")],
-            [InlineKeyboardButton("👤 User Profile Details", callback_data="us_m_profile"), InlineKeyboardButton("🔙 Back to Panel", callback_data="adm_back")]
+            [InlineKeyboardButton("👤 User Profile Details", callback_data="us_m_profile"), InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
         ]
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -448,7 +442,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [InlineKeyboardButton("✏️ Edit OTP Button Link", callback_data="ot_edit_link")],
             [InlineKeyboardButton("➕ Add Forward Group", callback_data="ot_add_group"), InlineKeyboardButton("🗑️ Manage/Delete Groups", callback_data="ot_del_group_list")],
-            [InlineKeyboardButton("🔙 Back to Panel", callback_data="adm_back")]
+            [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
         ]
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -486,7 +480,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [InlineKeyboardButton("✏️ Edit OTP Button Link", callback_data="ot_edit_link")],
             [InlineKeyboardButton("➕ Add Forward Group", callback_data="ot_add_group"), InlineKeyboardButton("🗑️ Manage/Delete Groups", callback_data="ot_del_group_list")],
-            [InlineKeyboardButton("🔙 Back to Panel", callback_data="adm_back")]
+            [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
         ]
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -515,7 +509,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("💵 Set Min Withdraw", callback_data="xr_set_minwd"), InlineKeyboardButton("👥 Set Refer Bonus", callback_data="xr_set_ref")],
             [InlineKeyboardButton("⚡ Set OTP Rate", callback_data="xr_set_otprate"), InlineKeyboardButton("📦 Set Num/Req Count", callback_data="xr_set_numreq")],
             [InlineKeyboardButton("⏱️ Set Cooldown", callback_data="xr_set_cooldown"), InlineKeyboardButton("💳 Payment Methods", callback_data="xr_pay_methods")],
-            [InlineKeyboardButton("🔙 Back to Panel", callback_data="adm_back")]
+            [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
         ]
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -545,7 +539,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("💵 Set Min Withdraw", callback_data="xr_set_minwd"), InlineKeyboardButton("👥 Set Refer Bonus", callback_data="xr_set_ref")],
             [InlineKeyboardButton("⚡ Set OTP Rate", callback_data="xr_set_otprate"), InlineKeyboardButton("📦 Set Num/Req Count", callback_data="xr_set_numreq")],
             [InlineKeyboardButton("⏱️ Set Cooldown", callback_data="xr_set_cooldown"), InlineKeyboardButton("💳 Payment Methods", callback_data="xr_pay_methods")],
-            [InlineKeyboardButton("🔙 Back to Panel", callback_data="adm_back")]
+            [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
         ]
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
