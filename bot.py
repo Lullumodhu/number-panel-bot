@@ -131,7 +131,6 @@ async def get_admin_panel_markup(user_id: int):
         f"নিচের অপশনগুলো থেকে সিলেক্ট করুন:"
     )
 
-    # মূল প্যানেলে নির্দিষ্ট ৫টি বাটন সরিয়ে শুধু '⚙️ System' এবং বাকিগুলো রাখা হয়েছে
     keyboard = [
         [InlineKeyboardButton("🏆 Leaderboard System", callback_data="adm_leaderboard")],
         [InlineKeyboardButton("⚙️ System", callback_data="adm_system_menu")],
@@ -188,7 +187,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_doc = await users_col.find_one({"user_id": user.id})
     if user_doc and user_doc.get("banned", False):
-        await update.message.reply_text("❌ আপনি এই বট থেকে ব্যান হয়েছেন।", parse_mode="Markdown")
+        await update.message.reply_text("❌ আপনি এই বট থেকে ব্যান হয়েছেন。", parse_mode="Markdown")
         return
 
     is_joined = await check_force_join(user.id, context)
@@ -250,13 +249,17 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন。", show_alert=True)
 
-    # --- System Control Hub Menu (যেখানে চাওয়া ৫টি বাটন যুক্ত করা হয়েছে) ---
+    # --- System Control Hub Menu (প্রথম ও দ্বিতীয় ছবির সকল বাটন একসাথে এখানে যুক্ত করা হয়েছে) ---
     elif query.data == "adm_system_menu" and await is_admin(user_id):
         await query.answer()
         sys_text = "⚙️ **System Control Hub**\n\nনিচের অপশনগুলো থেকে ম্যানেজ করুন:"
         sys_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("StexSMS Control", callback_data="stex_control"), InlineKeyboardButton("Voltx Control", callback_data="voltx_control")],
+            [InlineKeyboardButton("Zenex Control", callback_data="zenex_control"), InlineKeyboardButton("YE SMS Control", callback_data="ye_control")],
+            [InlineKeyboardButton("RanaX Control", callback_data="ranax_control"), InlineKeyboardButton("Premium Emoji", callback_data="premium_emoji")],
+            [InlineKeyboardButton("Menu Design", callback_data="menu_design"), InlineKeyboardButton("Test", callback_data="test")],
             [InlineKeyboardButton("👑 Admin Management", callback_data="adm_mgmt_menu")],
-            [InlineKeyboardButton("📢 Force Join System", callback_data="adm_fj_menu")],
+            [InlineKeyboardButton("⚙️ Force Join System", callback_data="adm_fj_menu")],
             [InlineKeyboardButton("👥 User Management", callback_data="adm_usermgmt_menu")],
             [InlineKeyboardButton("💬 OTP Group Management", callback_data="adm_otpgroup_menu")],
             [InlineKeyboardButton("🚀 X-Rony Control Panel", callback_data="adm_xrony_menu")],
