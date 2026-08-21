@@ -253,12 +253,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
 
-    # 4. Search Number Pagination/Next Batch Handler
+    # 4. Search Number Next Batch / Change Number Handler
     elif query.data.startswith("search_next:"):
         await query.answer()
         prefix = query.data.split(":", 1)[1].strip()
         
-        # ওই সিরিয়াল বা প্রফিক্স দিয়ে এভেইলেবল নাম্বার ফেচ করা
         cursor = numbers_col.find({
             "phone_number": {"$regex": f"^\\+?{prefix}", "$options": "i"},
             "status": "Available"
@@ -277,9 +276,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 num = doc['phone_number']
                 keyboard.append([InlineKeyboardButton(f"📲 📋 {num}", copy_text=CopyTextButton(text=num))])
             
-            # আবার নেক্সট বাটন বা ব্যাক অপশন রাখা
-            keyboard.append([InlineKeyboardButton("🔄 Next Batch", callback_data=f"search_next:{prefix}")])
-            keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="get_number_menu")])
+            # আপনার চাহিদা অনুযায়ী নেক্সট ব্যাচ বা ব্যাক টু মেনু সরিয়ে ঠিক GET NUMBER এর মতো বাটন সেট করা হলো
+            keyboard.append([InlineKeyboardButton("🔄 Change Number", callback_data=f"search_next:{prefix}")])
+            keyboard.append([
+                InlineKeyboardButton("🌍 Other Countries", callback_data="get_number_menu"),
+                InlineKeyboardButton("🌐 OTP", url=OTP_GROUP_URL)
+            ])
             
             reply_markup = InlineKeyboardMarkup(keyboard)
             
@@ -291,7 +293,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.edit_text(
                 f"❌ এই সিরিয়াল বা প্রফিক্সের (`{prefix}`) আর কোনো নাম্বার এভেইলেবল নেই!",
                 parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="get_number_menu")]])
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🌍 Other Countries", callback_data="get_number_menu")],
+                    [InlineKeyboardButton("🌐 OTP", url=OTP_GROUP_URL)]
+                ])
             )
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -358,8 +363,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 num = doc['phone_number']
                 keyboard.append([InlineKeyboardButton(f"📲 📋 {num}", copy_text=CopyTextButton(text=num))])
             
-            keyboard.append([InlineKeyboardButton("🔄 Next Batch", callback_data=f"search_next:{prefix}")])
-            keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="get_number_menu")])
+            # সার্চ রেজাল্টের নিচেও প্রফেশনাল বাটনগুলো যুক্ত করা হলো
+            keyboard.append([InlineKeyboardButton("🔄 Change Number", callback_data=f"search_next:{prefix}")])
+            keyboard.append([
+                InlineKeyboardButton("🌍 Other Countries", callback_data="get_number_menu"),
+                InlineKeyboardButton("🌐 OTP", url=OTP_GROUP_URL)
+            ])
             
             await update.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
         else:
@@ -526,7 +535,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "🚦 TRAFFIC":
         await update.message.reply_text(
             f"🚦 সিস্টেমের বর্তমান ট্রাফিক স্বাভাবিক আছে।\n\nঅফিশিয়াল আপডেট পেতে ভিজিট করুন: {UPDATE_CHANNEL_URL}",
-            parse_Mode="Markdown",
+            parse_mode="Markdown",
             reply_markup=main_menu_keyboard(user_id)
         )
         
@@ -590,7 +599,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text in ["📢 Broadcast", "👥 User Management"] and user_id == OWNER_ID:
         await update.message.reply_text(
             f"⚙️ `{text}` ফিচারটি ডেভেলপমেন্ট পর্যায়ে রয়েছে।",
-            parse_mode="Markdown",
+            parse_Mode="Markdown",
             reply_markup=admin_panel_keyboard()
         )
         
