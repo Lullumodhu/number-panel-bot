@@ -236,8 +236,49 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data == "adm_delete" and user_id == OWNER_ID:
         await query.answer()
-        text = "🗑️ **Delete Files / Numbers**\n\n(এই অপশনের কাজ পরবর্তীতে সেটআপ করে দেওয়া হবে।)"
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_back")]])
+        pipeline = [{"$group": {"_id": {"service": "$service_name", "country": "$country"}, "count": {"$sum": 1}}}]
+        cursor = numbers_col.aggregate(pipeline)
+        batches = await cursor.to_list(length=100)
+        
+        if not batches:
+            text = "🗑️ **Delete Files**\n\nবর্তমানে সিস্টেমে কোনো ফাইল বা ব্যাচ এভেইলেবল নেই।"
+            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_back")]])
+        else:
+            text = "🗑️ **Delete Files / Batches**\n\nনিচের তালিকা থেকে যে ফাইলটি মুছে ফেলতে চান সেটিতে ক্লিক করুন:"
+            keyboard_buttons = []
+            for b in batches:
+                serv = b["_id"]["service"]
+                count = b["count"]
+                keyboard_buttons.append([InlineKeyboardButton(f"❌ {serv} ({count} Nos)", callback_data=f"adm_delfile:{serv}")])
+            keyboard_buttons.append([InlineKeyboardButton("🔙 Back", callback_data="adm_back")])
+            keyboard = InlineKeyboardMarkup(keyboard_buttons)
+            
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+
+    elif query.data.startswith("adm_delfile:") and user_id == OWNER_ID:
+        service_to_del = query.data.split(":", 1)[1]
+        res = await numbers_col.delete_many({"service_name": service_to_del})
+        await traffic_col.delete_many({"service": service_to_del})
+        await query.answer(f"✅ সফলভাবে {service_to_del} এর সব নাম্বার ডিলিট করা হয়েছে!", show_alert=True)
+        
+        # Refresh the delete menu
+        pipeline = [{"$group": {"_id": {"service": "$service_name", "country": "$country"}, "count": {"$sum": 1}}}]
+        cursor = numbers_col.aggregate(pipeline)
+        batches = await cursor.to_list(length=100)
+        
+        if not batches:
+            text = "🗑️ **Delete Files**\n\nবর্তমানে সিস্টেমে কোনো ফাইল বা ব্যাচ এভেইলেবল নেই।"
+            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_back")]])
+        else:
+            text = "🗑️ **Delete Files / Batches**\n\nনিচের তালিকা থেকে যে ফাইলটি মুছে ফেলতে চান সেটিতে ক্লিক করুন:"
+            keyboard_buttons = []
+            for b in batches:
+                serv = b["_id"]["service"]
+                count = b["count"]
+                keyboard_buttons.append([InlineKeyboardButton(f"❌ {serv} ({count} Nos)", callback_data=f"adm_delfile:{serv}")])
+            keyboard_buttons.append([InlineKeyboardButton("🔙 Back", callback_data="adm_back")])
+            keyboard = InlineKeyboardMarkup(keyboard_buttons)
+            
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
     elif query.data == "adm_broadcast" and user_id == OWNER_ID:
@@ -767,7 +808,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             country = text.strip()
             service_name = state_data["service"]
             ADMIN_UPLOAD_STATE[user_id] = {"step": "GET_NUMBERS", "service": service_name, "country": country}
-            await update.message.reply_text("📂 এখন `.txt` ফাইল আপলোড করুন অথবা নাম্বারগুলো পেস্ট করুন:", parse_mode="Markdown", reply_markup=back_keyboard())
+            await update.message.reply_text(f"✅ সার্ভিস: `{service_name}` | কান্ট্রি: `{country}`\n\n📂 এখন নাম্বার ফাইল (`.txt`) সেন্ড করুন অথবা নাম্বারগুলো পেস্ট করে দিন:", parse_mode="Markdown", reply_markup=back_keyboard())
             return
 
         elif current_step == "GET_NUMBERS" and text:
@@ -785,7 +826,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             del ADMIN_UPLOAD_STATE[user_id]
             
-            await update.message.reply_text(f"🎉 সফলভাবে {len(numbers_list)}টি নাম্বার যুক্ত হয়েছে!", reply_markup=main_menu_keyboard(user_id))
+            success_text = (
+                f"🎉 **সফলভাবে নাম্বার আপলোড সম্পন্ন হয়েছে!**\n\n"
+                f"💬 সার্ভিস নাম: `{service_name}`\n"
+                f"🌍 কান্ট্রি নাম: `{country}`\n"
+                f"📱 মোট নাম্বার: `{len(numbers_list)} টি`\n\n"
+                f"✅ এখন ইউজাররা গেট নাম্বার থেকে কাজ করতে পারবে।"
+            )
+            success_keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚀 Get Number", callback_data=f"sel_serv:{service_name}")]
+            ])
+            await update.message.reply_text(success_text, parse_mode="Markdown", reply_markup=success_keyboard)
             return
 
     if user_id == OWNER_ID and update.message.document and user_id in ADMIN_UPLOAD_STATE:
@@ -814,7 +865,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             del ADMIN_UPLOAD_STATE[user_id]
             
-            await update.message.reply_text(f"🎉 ফাইল থেকে সফলভাবে {len(numbers_list)}টি নাম্বার যুক্ত হয়েছে!", reply_markup=main_menu_keyboard(user_id))
+            success_text = (
+                f"🎉 **ফাইল থেকে সফলভাবে নাম্বার আপলোড সম্পন্ন হয়েছে!**\n\n"
+                f"💬 সার্ভিস নাম: `{service_name}`\n"
+                f"🌍 কান্ট্রি নাম: `{country}`\n"
+                f"📱 মোট নাম্বার: `{len(numbers_list)} টি`\n\n"
+                f"✅ এখন ইউজাররা গেট নাম্বার থেকে কাজ করতে পারবে।"
+            )
+            success_keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚀 Get Number", callback_data=f"sel_serv:{service_name}")]
+            ])
+            await update.message.reply_text(success_text, parse_mode="Markdown", reply_markup=success_keyboard)
             return
 
     if text == "/start":
@@ -909,7 +970,7 @@ async def main():
     
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, otp_group_listener))
 
-    print("Zentrix Bot is running successfully with System Menu added...")
+    print("Zentrix Bot is running successfully with Upload & Delete features optimized...")
     
     async def main_runner():
         await application.initialize()
