@@ -28,8 +28,9 @@ UPDATE_CHANNEL_ID = "@Zentrix_Update"
 OTP_GROUP_URL = "https://t.me/+pBpZWtQC4qswODI1"
 SUPPORT_ADMIN = "@ranaXvou"
 
-# Temporary dictionary to track admin state for multi-step uploading
+# Temporary dictionary to track admin state & user search state
 ADMIN_UPLOAD_STATE = {}
+USER_SEARCH_STATE = {}
 
 # --- Force Join Check Function ---
 async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -91,6 +92,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if user.id in ADMIN_UPLOAD_STATE:
         del ADMIN_UPLOAD_STATE[user.id]
+    if user.id in USER_SEARCH_STATE:
+        del USER_SEARCH_STATE[user.id]
 
     await users_col.update_one(
         {"user_id": user.id},
@@ -154,7 +157,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await context.bot.send_message(chat_id=user_id, text=welcome_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
         else:
-            await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন.", show_alert=True)
+            await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন।", show_alert=True)
 
     # 1. Get Number Menu -> Show Services List
     elif query.data in ["get_stock_click", "get_number_menu"]:
@@ -232,7 +235,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = []
             for doc in numbers:
                 num = doc['phone_number']
-                # সরাসরি টেলিগ্রামের CopyTextButton ব্যবহার করা হলো যাতে ট্যাপ করলেই ক্লিপবোর্ডে কপি হয়ে যায়
                 keyboard.append([InlineKeyboardButton(f"📲 📋 {num}", copy_text=CopyTextButton(text=num))])
             
             keyboard.append([InlineKeyboardButton("🔄 Change Number", callback_data=f"change_num:{service_name}:{country}")])
@@ -251,6 +253,47 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
 
+    # 4. Search Number Pagination/Next Batch Handler
+    elif query.data.startswith("search_next:"):
+        await query.answer()
+        prefix = query.data.split(":", 1)[1].strip()
+        
+        # ওই সিরিয়াল বা প্রফিক্স দিয়ে এভেইলেবল নাম্বার ফেচ করা
+        cursor = numbers_col.find({
+            "phone_number": {"$regex": f"^\\+?{prefix}", "$options": "i"},
+            "status": "Available"
+        }).limit(2)
+        
+        numbers = await cursor.to_list(length=2)
+        
+        if numbers:
+            num_ids = [doc["_id"] for doc in numbers]
+            await numbers_col.update_many({"_id": {"$in": num_ids}}, {"$set": {"status": "Assigned"}})
+            
+            text_msg = f"🔎 **SEARCH RESULTS** (Prefix: `{prefix}`)"
+            
+            keyboard = []
+            for doc in numbers:
+                num = doc['phone_number']
+                keyboard.append([InlineKeyboardButton(f"📲 📋 {num}", copy_text=CopyTextButton(text=num))])
+            
+            # আবার নেক্সট বাটন বা ব্যাক অপশন রাখা
+            keyboard.append([InlineKeyboardButton("🔄 Next Batch", callback_data=f"search_next:{prefix}")])
+            keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="get_number_menu")])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            try:
+                await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
+            except Exception:
+                await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
+        else:
+            await query.message.edit_text(
+                f"❌ এই সিরিয়াল বা প্রফিক্সের (`{prefix}`) আর কোনো নাম্বার এভেইলেবল নেই!",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="get_number_menu")]])
+            )
+
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text if update.message.text else ""
@@ -268,6 +311,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if user_id == OWNER_ID:
                 await update.message.reply_text("👑 **Admin Control Panel**", parse_mode="Markdown", reply_markup=admin_panel_keyboard())
                 return
+        if user_id in USER_SEARCH_STATE:
+            del USER_SEARCH_STATE[user_id]
         
         await update.message.reply_text("👇 Main Menu:", reply_markup=main_menu_keyboard(user_id))
         return
@@ -284,6 +329,45 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚠️ আপনি চ্যানেল বা গ্রুপ থেকে লিভ নিয়েছেন!\nবট ব্যবহার করতে হলে আবার জয়েন করে **'Joined / Check'** বাটনে চাপুন:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
+        return
+
+    # --- User Search Number Flow ---
+    if user_id in USER_SEARCH_STATE:
+        prefix = text.strip()
+        del USER_SEARCH_STATE[user_id]
+        
+        if not prefix:
+            await update.message.reply_text("❌ কান্ট্রি কোড বা সিরিয়াল খালি রাখা যাবে না। আবার চেষ্টা করুন:", reply_markup=main_menu_keyboard(user_id))
+            return
+            
+        cursor = numbers_col.find({
+            "phone_number": {"$regex": f"^\\+?{prefix}", "$options": "i"},
+            "status": "Available"
+        }).limit(2)
+        
+        numbers = await cursor.to_list(length=2)
+        
+        if numbers:
+            num_ids = [doc["_id"] for doc in numbers]
+            await numbers_col.update_many({"_id": {"$in": num_ids}}, {"$set": {"status": "Assigned"}})
+            
+            text_msg = f"🔎 **SEARCH RESULTS** (Prefix: `{prefix}`)"
+            
+            keyboard = []
+            for doc in numbers:
+                num = doc['phone_number']
+                keyboard.append([InlineKeyboardButton(f"📲 📋 {num}", copy_text=CopyTextButton(text=num))])
+            
+            keyboard.append([InlineKeyboardButton("🔄 Next Batch", callback_data=f"search_next:{prefix}")])
+            keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="get_number_menu")])
+            
+            await update.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            await update.message.reply_text(
+                f"❌ এই সিরিয়াল বা প্রফিক্স (`{prefix}`) দিয়ে কোনো নাম্বার খুঁজে পাওয়া যাচ্ছে না!",
+                parse_mode="Markdown",
+                reply_markup=main_menu_keyboard(user_id)
+            )
         return
 
     # --- Step-by-Step Admin Upload Flow (Text Numbers) ---
@@ -431,15 +515,18 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
         
     elif text == "🔎 SEARCH NUMBER":
+        USER_SEARCH_STATE[user_id] = True
         await update.message.reply_text(
-            "🔎 আপনি যে নাম্বার বা কান্ট্রি কোড খুঁজতে চান তা লিখে পাঠান:",
+            "🔎 **Search Number**\n\n"
+            "দয়া করে কান্ট্রি কোড বা সিরিয়াল নাম্বার লিখে পাঠান (যেমন: `223` বা `22357`):",
+            parse_mode="Markdown",
             reply_markup=back_keyboard()
         )
         
     elif text == "🚦 TRAFFIC":
         await update.message.reply_text(
             f"🚦 সিস্টেমের বর্তমান ট্রাফিক স্বাভাবিক আছে।\n\nঅফিশিয়াল আপডেট পেতে ভিজিট করুন: {UPDATE_CHANNEL_URL}",
-            parse_mode="Markdown",
+            parse_Mode="Markdown",
             reply_markup=main_menu_keyboard(user_id)
         )
         
@@ -471,6 +558,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "👑 ADMIN PANEL" and user_id == OWNER_ID:
         if user_id in ADMIN_UPLOAD_STATE:
             del ADMIN_UPLOAD_STATE[user_id]
+        if user_id in USER_SEARCH_STATE:
+            del USER_SEARCH_STATE[user_id]
         await update.message.reply_text(
             "👑 **Admin Control Panel**\nনিচের অপশনগুলো থেকে ম্যানেজ করুন:",
             parse_mode="Markdown",
@@ -493,7 +582,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ADMIN_UPLOAD_STATE[user_id] = {"step": "GET_SERVICE"}
         await update.message.reply_text(
             "⚙️ **Number Management (Step 1/3)**\n\n"
-            "প্রথমে কোন সার্ভিসের জন্য নাম্বার আপলোড করবেন তার নাম লিখে পাঠান (যেমন: `Telegram` বা `WhatsApp`):",
+            "প্রথমে কোন সার্ভিসের জন্য নাম্বার আপলোড করবেন তার নাম লিখে পাঠাবেন (যেমন: `Telegram` বা `WhatsApp`):",
             parse_mode="Markdown",
             reply_markup=back_keyboard()
         )
@@ -506,7 +595,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     else:
-        if not update.message.document and user_id not in ADMIN_UPLOAD_STATE:
+        if not update.message.document and user_id not in ADMIN_UPLOAD_STATE and user_id not in USER_SEARCH_STATE:
             await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন।", reply_markup=main_menu_keyboard(user_id))
 
 async def main():
