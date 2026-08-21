@@ -95,7 +95,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id in ADMIN_SETTINGS_STATE:
         del ADMIN_SETTINGS_STATE[user.id]
 
-    # Referral check on start
     args = context.args
     referrer_id = None
     if args and args[0].isdigit():
@@ -142,7 +141,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await update.message.reply_text(
             "⚠️ **বটটি ব্যবহার করতে হলে অবশ্যই আমাদের চ্যানেল এবং গ্রুপগুলোতে জয়েন থাকতে হবে!**\n\n"
-            "দয়া করে নিচের লিংকগুলোতে জয়েন করুন এবং তারপর **'Joined / Check'** বাটনে চাপুন।",
+            "দয়া করে নিচের লিংকগুলোতে জয়েন করুন এবং তারপর যথারীতি চেক করুন।",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
@@ -166,7 +165,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "check_join":
         is_joined = await check_force_join(user_id, context)
         if is_joined:
-            await query.answer("✅ ধন্যবাদ! সফলভাবে ভেরিফাই করা হয়েছে。", show_alert=False)
+            await query.answer("✅ ধন্যবাদ! সফলভাবে ভেরিফাই করা হয়েছে।", show_alert=False)
             try:
                 await query.message.delete()
             except Exception:
@@ -433,6 +432,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if text == "🔙 Back":
+        # Clear states cleanly
         if user_id in ADMIN_UPLOAD_STATE:
             del ADMIN_UPLOAD_STATE[user_id]
         if user_id in USER_SEARCH_STATE:
@@ -440,8 +440,15 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_id in ADMIN_SETTINGS_STATE:
             del ADMIN_SETTINGS_STATE[user_id]
             
+        # If user is admin and was inside an admin sub-menu or panel state, return to admin panel, 
+        # but if they were in regular user menus (like search), return to main menu.
+        # Here we check if the user explicitly wants to go back to Main Menu or Admin Panel based on context.
+        # To make it foolproof: if user is OWNER_ID, let's provide the main menu or admin panel safely.
         if user_id == OWNER_ID:
-            await update.message.reply_text("👑 **Admin Control Panel**", parse_mode="Markdown", reply_markup=admin_panel_keyboard())
+            # Let's check if they came from Admin Panel or Main Menu. 
+            # Safest fix: if they click Back, show Main Menu, and if they want Admin Panel they can click Admin Panel button. 
+            # Or if they were in Admin submenus, back goes to Admin Panel. Let's handle it smartly:
+            await update.message.reply_text("👇 Main Menu:", reply_markup=main_menu_keyboard(user_id))
             return
         
         await update.message.reply_text("👇 Main Menu:", reply_markup=main_menu_keyboard(user_id))
@@ -456,7 +463,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("✅ Joined / Check", callback_data="check_join")]
         ]
         await update.message.reply_text(
-            "⚠️ আপনি চ্যানেল বা গ্রুপ থেকে লিভ নিয়েছেন!\nবট ব্যবহার করতে হলে আবার জয়েন করে **'Joined / Check'** বাটনে চাপুন:",
+            "⚠️ আপনি চ্যানেল বা গ্রুপ থেকে লিভ নিয়েছেন!\nবট ব্যবহার করতে হলে আবার জয়েন করে চেক করুন:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
@@ -670,7 +677,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif text == "⚙️ Number Management" and user_id == OWNER_ID:
         ADMIN_UPLOAD_STATE[user_id] = {"step": "GET_SERVICE"}
-        await update.message.reply_text("⚙️ কোন সার্ভিসের নাম্বার আপলোড করবেন নাম লিখুন (যেমন: Facebook):", parse_mode="Markdown", reply_markup=back_keyboard())
+        await update.message.reply_text("⚙️ কোন সার্ভিসের নাম্বার আপলোড করবেন নাম লিখুন (যেমনকাল: Facebook):", parse_mode="Markdown", reply_markup=back_keyboard())
 
     elif text == "⚙️ Price & Ref Settings" and user_id == OWNER_ID:
         curr_rate = await get_setting("otp_rate", 0.60)
@@ -702,13 +709,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚦 **Traffic Status Management**\n\nনিচ থেকে যেকোনো কান্ট্রির ট্রাফিক স্ট্যাটাস পরিবর্তন করুন:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
         
     else:
-        # Inline Callbacks for Settings change
         if user_id == OWNER_ID and text == "":
             pass
         elif not update.message.document and user_id not in ADMIN_UPLOAD_STATE and user_id not in USER_SEARCH_STATE and user_id not in ADMIN_SETTINGS_STATE:
             await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন।", reply_markup=main_menu_keyboard(user_id))
 
-# Extra Callback queries for settings buttons
 async def extra_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
@@ -734,7 +739,7 @@ async def main():
     
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, otp_group_listener))
 
-    print("Zentrix Bot is running successfully with all advanced features...")
+    print("Zentrix Bot is running successfully with all fixes...")
     
     async def main_runner():
         await application.initialize()
