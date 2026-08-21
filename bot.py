@@ -77,16 +77,38 @@ def back_keyboard():
     return ReplyKeyboardMarkup([[KeyboardButton("🔙 Back")]], resize_keyboard=True)
 
 # --- Admin Inline Panel Keyboard ---
-def admin_inline_panel():
+async def get_admin_panel_markup():
+    # Fetch overview stats dynamically
+    total_users = await users_col.count_documents({})
+    total_numbers = await numbers_col.count_documents({})
+    available_numbers = await numbers_col.count_documents({"status": "Available"})
+    assigned_numbers = await numbers_col.count_documents({"status": "Assigned"})
+    used_numbers = await numbers_col.count_documents({"status": "Used"})
+    
+    pipeline = [{"$group": {"_id": {"service": "$service_name", "country": "$country"}}}]
+    files_cursor = numbers_col.aggregate(pipeline)
+    files_list = await files_cursor.to_list(length=1000)
+    total_files = len(files_list)
+
+    panel_text = (
+        f"👑 **Admin Control Panel**\n\n"
+        f"📊 **Database Overview:**\n"
+        f"👥 Total Users: `{total_users}`\n"
+        f"📂 Total Files/Batches: `{total_files}`\n"
+        f"📱 Total Numbers: `{total_numbers}`\n"
+        f"🟢 Available: `{available_numbers}` | 🔄 Assigned: `{assigned_numbers}`\n"
+        f"🔴 Used Numbers: `{used_numbers}`\n\n"
+        f"নিচের অপশনগুলো থেকে সিলেক্ট করুন:"
+    )
+
     keyboard = [
-        [InlineKeyboardButton("📊 Database Overview", callback_data="adm_overview")],
         [InlineKeyboardButton("🏆 Leaderboard System", callback_data="adm_leaderboard")],
         [InlineKeyboardButton("📤 Upload Number", callback_data="adm_upload"), InlineKeyboardButton("🗑️ Delete Files", callback_data="adm_delete")],
         [InlineKeyboardButton("📢 Broadcast System", callback_data="adm_broadcast")],
         [InlineKeyboardButton("📱 Used Numbers", callback_data="adm_used"), InlineKeyboardButton("📲 Unused Numbers", callback_data="adm_unused")],
         [InlineKeyboardButton("❌ Close Panel", callback_data="adm_close")]
     ]
-    return InlineKeyboardMarkup(keyboard)
+    return panel_text, InlineKeyboardMarkup(keyboard)
 
 # --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -181,35 +203,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await context.bot.send_message(chat_id=user_id, text=welcome_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
         else:
-            await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়en করুন।", show_alert=True)
+            await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন।", show_alert=True)
 
     # --- Admin Inline Panel Actions ---
-    elif query.data == "adm_overview" and user_id == OWNER_ID:
-        await query.answer()
-        total_users = await users_col.count_documents({})
-        total_numbers = await numbers_col.count_documents({})
-        available_numbers = await numbers_col.count_documents({"status": "Available"})
-        assigned_numbers = await numbers_col.count_documents({"status": "Assigned"})
-        used_numbers = await numbers_col.count_documents({"status": "Used"})
-        
-        # Count unique uploaded files/batches if stored or distinct service/country pairs
-        pipeline = [{"$group": {"_id": {"service": "$service_name", "country": "$country"}}}]
-        files_cursor = numbers_col.aggregate(pipeline)
-        files_list = await files_cursor.to_list(length=1000)
-        total_files = len(files_list)
-
-        text = (
-            f"📊 **Database Overview & Statistics**\n\n"
-            f"👥 **Total Users:** `{total_users}`\n"
-            f"📂 **Total Files/Batches Added:** `{total_files}`\n"
-            f"📱 **Total Numbers:** `{total_numbers}`\n"
-            f"🟢 **Available Numbers:** `{available_numbers}`\n"
-            f"🔄 **Assigned Numbers:** `{assigned_numbers}`\n"
-            f"🔴 **Used Numbers:** `{used_numbers}`"
-        )
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="adm_back")]])
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-
     elif query.data == "adm_leaderboard" and user_id == OWNER_ID:
         await query.answer()
         text = "🏆 **Leaderboard System**\n\n(এই ফিচারটির কার্যকারিতা শীঘ্রই যুক্ত করা হবে।)"
@@ -256,7 +252,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data == "adm_back" and user_id == OWNER_ID:
         await query.answer()
-        await query.message.edit_text("👑 **Admin Control Panel**\n\nনিচের অপশনগুলো থেকে সিলেক্ট করুন:", parse_mode="Markdown", reply_markup=admin_inline_panel())
+        text, markup = await get_admin_panel_markup()
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=markup)
 
     elif query.data == "refresh_traffic":
         await query.answer("🔄 ট্রাফিক রিফ্রেশ করা হয়েছে!")
@@ -866,7 +863,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "🆘 SUPPORT":
         support_text = (
             f"🆘 **SUPPORT & HELP DESK**\n\n"
-            f"যেকোনো প্রয়োজনে সরাসরি আমাদের অফিসিয়াল অ্যাডমিনের সাথে যোগাযোগ করুন অথবা চ্যানেল ও গ্রুপে যুক্ত থাকুনন্য।\n\n"
+            f"যেকোনো প্রয়োজনে সরাসরি আমাদের অফিসিয়াল অ্যাডমিনের সাথে যোগাযোগ করুন অথবা চ্যানেল ও গ্রুপে যুক্ত থাকুন।\n\n"
             f"👑 **Admin Support:** [Click Here to Message]({SUPPORT_URL})"
         )
         keyboard = [
@@ -876,11 +873,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(support_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
         
     elif text == "👑 ADMIN PANEL" and user_id == OWNER_ID:
-        await update.message.reply_text(
-            "👑 **Admin Control Panel**\n\nনিচের অপশনগুলো থেকে সিলেক্ট করুন:",
-            parse_mode="Markdown",
-            reply_markup=admin_inline_panel()
-        )
+        text_msg, markup = await get_admin_panel_markup()
+        await update.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=markup)
         
     else:
         if user_id == OWNER_ID and text == "":
@@ -900,7 +894,7 @@ async def main():
     
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, otp_group_listener))
 
-    print("Zentrix Bot is running successfully with Inline Admin Panel...")
+    print("Zentrix Bot is running successfully with Updated Admin Panel...")
     
     async def main_runner():
         await application.initialize()
