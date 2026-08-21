@@ -131,12 +131,11 @@ async def get_admin_panel_markup(user_id: int):
         f"নিচের অপশনগুলো থেকে সিলেক্ট করুন:"
     )
 
+    # ইনলাইন কিবোর্ড লেআউট (ছোট এবং সুন্দর দুই সাইডে সাজানো)
     keyboard = [
-        [InlineKeyboardButton("🏆 Leaderboard System", callback_data="adm_leaderboard")],
-        [InlineKeyboardButton("⚙️ System", callback_data="adm_system_menu")],
-        [InlineKeyboardButton("📤 Upload Number", callback_data="adm_upload"), InlineKeyboardButton("🗑️ Delete Files", callback_data="adm_delete")],
-        [InlineKeyboardButton("📢 Broadcast System", callback_data="adm_broadcast")],
-        [InlineKeyboardButton("❌ Close Panel", callback_data="adm_close")]
+        [InlineKeyboardButton("🏆 Leaderboard", callback_data="adm_leaderboard"), InlineKeyboardButton("⚙️ System Hub", callback_data="adm_system_menu")],
+        [InlineKeyboardButton("📤 Upload", callback_data="adm_upload"), InlineKeyboardButton("🗑️ Delete", callback_data="adm_delete")],
+        [InlineKeyboardButton("📢 Broadcast", callback_data="adm_broadcast"), InlineKeyboardButton("❌ Close", callback_data="adm_close")]
     ]
     return panel_text, InlineKeyboardMarkup(keyboard)
 
@@ -247,41 +246,46 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup = await build_main_menu(user_id)
             await context.bot.send_message(chat_id=user_id, text=welcome_text, parse_mode="Markdown", reply_markup=reply_markup)
         else:
-            await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন。", show_alert=True)
+            await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন.", show_alert=True)
 
-    # --- System Control Hub Menu (প্রথম ও দ্বিতীয় ছবির সকল বাটন একসাথে এখানে যুক্ত করা হয়েছে) ---
+    # --- System Control Hub Menu (Inline Button Layout Optimized) ---
     elif query.data == "adm_system_menu" and await is_admin(user_id):
         await query.answer()
         sys_text = "⚙️ **System Control Hub**\n\nনিচের অপশনগুলো থেকে ম্যানেজ করুন:"
         sys_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("StexSMS Control", callback_data="stex_control"), InlineKeyboardButton("Voltx Control", callback_data="voltx_control")],
-            [InlineKeyboardButton("Zenex Control", callback_data="zenex_control"), InlineKeyboardButton("YE SMS Control", callback_data="ye_control")],
-            [InlineKeyboardButton("RanaX Control", callback_data="ranax_control"), InlineKeyboardButton("Premium Emoji", callback_data="premium_emoji")],
+            [InlineKeyboardButton("StexSMS", callback_data="stex_control"), InlineKeyboardButton("Voltx", callback_data="voltx_control")],
+            [InlineKeyboardButton("Zenex", callback_data="zenex_control"), InlineKeyboardButton("YE SMS", callback_data="ye_control")],
+            [InlineKeyboardButton("RanaX", callback_data="ranax_control"), InlineKeyboardButton("Emoji", callback_data="premium_emoji")],
             [InlineKeyboardButton("Menu Design", callback_data="menu_design"), InlineKeyboardButton("Test", callback_data="test")],
-            [InlineKeyboardButton("👑 Admin Management", callback_data="adm_mgmt_menu")],
-            [InlineKeyboardButton("⚙️ Force Join System", callback_data="adm_fj_menu")],
-            [InlineKeyboardButton("👥 User Management", callback_data="adm_usermgmt_menu")],
-            [InlineKeyboardButton("💬 OTP Group Management", callback_data="adm_otpgroup_menu")],
-            [InlineKeyboardButton("🚀 X-Rony Control Panel", callback_data="adm_xrony_menu")],
+            [InlineKeyboardButton("👑 Admin Mgmt", callback_data="adm_mgmt_menu"), InlineKeyboardButton("⚙️ Force Join", callback_data="adm_fj_menu")],
+            [InlineKeyboardButton("👥 User Mgmt", callback_data="adm_usermgmt_menu"), InlineKeyboardButton("💬 OTP Groups", callback_data="adm_otpgroup_menu")],
+            [InlineKeyboardButton("🚀 X-Rony Panel", callback_data="adm_xrony_menu")],
             [InlineKeyboardButton("🔙 Back", callback_data="adm_back")]
         ])
         await query.message.edit_text(sys_text, parse_mode="Markdown", reply_markup=sys_keyboard)
 
-    # --- 1. Admin Management System ---
+    # --- 1. Admin Management System (Inline Buttons for Admin List) ---
     elif query.data == "adm_mgmt_menu" and await is_admin(user_id):
         await query.answer()
         admins = await admins_col.find({}).to_list(length=100)
-        text = f"👑 **Admin Management System**\n\nPrimary Owner ID: `{OWNER_ID}` (Cannot be removed)\n\n**Current Admins:**\n"
+        text = f"👑 **Admin Management System**\n\nPrimary Owner ID: `{OWNER_ID}`\n\n**Current Admins:**"
+        
+        keyboard = []
         if not admins:
-            text += "⚠️ কোনো সাব-এডমিন নেই।"
+            keyboard.append([InlineKeyboardButton("⚠️ কোনো সাব-এডমিন নেই", callback_data="noop")])
         else:
-            for idx, adm in enumerate(admins, 1):
-                text += f"{idx}. ID: `{adm['user_id']}` | Name: {adm.get('username', 'N/A')}\n"
+            for adm in admins:
+                adm_id = adm['user_id']
+                adm_name = adm.get('username', 'Admin')
+                # প্রতিটি অ্যাডমিনের জন্য সুন্দর ইনলাইন বাটন ও ডিলিট অপশন
+                keyboard.append([
+                    InlineKeyboardButton(f"👤 {adm_name} (`{adm_id}`)", callback_data=f"noop_{adm_id}"),
+                    InlineKeyboardButton("❌ রিমুভ", callback_data=f"adm_do_rem:{adm_id}")
+                ])
 
-        keyboard = [
-            [InlineKeyboardButton("➕ Add Admin", callback_data="adm_add_start"), InlineKeyboardButton("❌ Remove Admin", callback_data="adm_rem_list")],
-            [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
-        ]
+        keyboard.append([InlineKeyboardButton("➕ Add Admin", callback_data="adm_add_start")])
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
+        
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data == "adm_add_start" and user_id == OWNER_ID:
@@ -293,51 +297,54 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_mgmt_menu")]])
         )
 
-    elif query.data == "adm_rem_list" and user_id == OWNER_ID:
-        await query.answer()
-        admins = await admins_col.find({}).to_list(length=100)
-        if not admins:
-            await query.answer("রিমুভ করার মতো কোনো এডমিন নেই!", show_alert=True)
-            return
-        keyboard = []
-        for adm in admins:
-            keyboard.append([InlineKeyboardButton(f"❌ Remove `{adm['user_id']}`", callback_data=f"adm_do_rem:{adm['user_id']}")])
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_mgmt_menu")])
-        await query.message.edit_text("❌ **Select Admin to Remove:**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-
     elif query.data.startswith("adm_do_rem:") and user_id == OWNER_ID:
         rem_id = int(query.data.split(":", 1)[1])
         await admins_col.delete_one({"user_id": rem_id})
         await query.answer(f"✅ Admin {rem_id} successfully removed!", show_alert=True)
         
+        # রিফ্রেশ করে আবার পেজ লোড করা
         admins = await admins_col.find({}).to_list(length=100)
-        text = f"👑 **Admin Management System**\n\nPrimary Owner ID: `{OWNER_ID}`\n\n**Current Admins:**\n"
-        for idx, adm in enumerate(admins, 1):
-            text += f"{idx}. ID: `{adm['user_id']}`\n"
-        keyboard = [
-            [InlineKeyboardButton("➕ Add Admin", callback_data="adm_add_start"), InlineKeyboardButton("❌ Remove Admin", callback_data="adm_rem_list")],
-            [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
-        ]
+        text = f"👑 **Admin Management System**\n\nPrimary Owner ID: `{OWNER_ID}`\n\n**Current Admins:**"
+        keyboard = []
+        for adm in admins:
+            adm_id = adm['user_id']
+            adm_name = adm.get('username', 'Admin')
+            keyboard.append([
+                InlineKeyboardButton(f"👤 {adm_name} (`{adm_id}`)", callback_data=f"noop_{adm_id}"),
+                InlineKeyboardButton("❌ রিমুভ", callback_data=f"adm_do_rem:{adm_id}")
+            ])
+        keyboard.append([InlineKeyboardButton("➕ Add Admin", callback_data="adm_add_start")])
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    # --- 2. Force Join System ---
+    # --- 2. Force Join System (Inline Buttons for Channels List) ---
     elif query.data == "adm_fj_menu" and await is_admin(user_id):
         await query.answer()
         fj_status = await get_setting("force_join_status", "ON")
         channels = await channels_col.find({}).to_list(length=50)
         
-        text = f"📢 **Force Join System Control**\n\nSTATUS: `{fj_status}`\n\n**Managed Channels:**\n"
-        if not channels:
-            text += "⚠️ কোনো কাস্টম চ্যানেল যুক্ত করা হয়নি (ডিফল্ট মেইন ও আপডেট চ্যানেল কাজ করবে)।\n"
-        else:
+        text = f"📢 **Force Join System Control**\n\nSTATUS: `{fj_status}`\n\n**Managed Channels:**"
+        
+        keyboard = []
+        if channels:
             for c in channels:
-                text += f"- {c.get('name')} (`{c.get('chat_id')}`)\n"
+                c_name = c.get('name', 'Channel')
+                c_id = c.get('chat_id')
+                # প্রতিটি চ্যানেলের জন্য ইনলাইন বাটন ও ডিলিট অপশন
+                keyboard.append([
+                    InlineKeyboardButton(f"📢 {c_name} (`{c_id}`)", callback_data=f"noop_chan_{c_id}"),
+                    InlineKeyboardButton("🗑️ রিমুভ", callback_data=f"fj_do_del:{c_id}")
+                ])
+        else:
+            text += "\n⚠️ কোনো কাস্টম চ্যানেল যুক্ত করা হয়নি।"
 
-        keyboard = [
-            [InlineKeyboardButton("🟢 Turn ON", callback_data="set_fj:ON"), InlineKeyboardButton("🔴 Turn OFF", callback_data="set_fj:OFF")],
-            [InlineKeyboardButton("➕ Add Channel", callback_data="fj_add_ch"), InlineKeyboardButton("🗑️ Delete Channel", callback_data="fj_del_ch_list")],
-            [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
-        ]
+        status_toggle_btn = "🔴 Turn OFF" if fj_status == "ON" else "🟢 Turn ON"
+        toggle_val = "OFF" if fj_status == "ON" else "ON"
+
+        keyboard.append([InlineKeyboardButton(status_toggle_btn, callback_data=f"set_fj:{toggle_val}")])
+        keyboard.append([InlineKeyboardButton("➕ Add Channel", callback_data="fj_add_ch")])
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
+        
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data.startswith("set_fj:") and await is_admin(user_id):
@@ -345,16 +352,21 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await set_setting("force_join_status", val)
         await query.answer(f"Force Join Status set to {val}!", show_alert=True)
         
+        # রিফ্রেশ
         fj_status = val
         channels = await channels_col.find({}).to_list(length=50)
-        text = f"📢 **Force Join System Control**\n\nSTATUS: `{fj_status}`\n\n**Managed Channels:**\n"
+        text = f"📢 **Force Join System Control**\n\nSTATUS: `{fj_status}`\n\n**Managed Channels:**"
+        keyboard = []
         for c in channels:
-            text += f"- {c.get('name')} (`{c.get('chat_id')}`)\n"
-        keyboard = [
-            [InlineKeyboardButton("🟢 Turn ON", callback_data="set_fj:ON"), InlineKeyboardButton("🔴 Turn OFF", callback_data="set_fj:OFF")],
-            [InlineKeyboardButton("➕ Add Channel", callback_data="fj_add_ch"), InlineKeyboardButton("🗑️ Delete Channel", callback_data="fj_del_ch_list")],
-            [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
-        ]
+            keyboard.append([
+                InlineKeyboardButton(f"📢 {c.get('name')} (`{c.get('chat_id')}`)", callback_data=f"noop"),
+                InlineKeyboardButton("🗑️ রিমুভ", callback_data=f"fj_do_del:{c.get('chat_id')}")
+            ])
+        status_toggle_btn = "🔴 Turn OFF" if fj_status == "ON" else "🟢 Turn ON"
+        toggle_val = "OFF" if fj_status == "ON" else "ON"
+        keyboard.append([InlineKeyboardButton(status_toggle_btn, callback_data=f"set_fj:{toggle_val}")])
+        keyboard.append([InlineKeyboardButton("➕ Add Channel", callback_data="fj_add_ch")])
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data == "fj_add_ch" and await is_admin(user_id):
@@ -366,18 +378,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_fj_menu")]])
         )
 
-    elif query.data == "fj_del_ch_list" and await is_admin(user_id):
-        await query.answer()
-        channels = await channels_col.find({}).to_list(length=50)
-        if not channels:
-            await query.answer("ডিলিট করার মতো কোনো চ্যানেল নেই!", show_alert=True)
-            return
-        keyboard = []
-        for c in channels:
-            keyboard.append([InlineKeyboardButton(f"❌ {c.get('name')}", callback_data=f"fj_do_del:{c.get('chat_id')}")])
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_fj_menu")])
-        await query.message.edit_text("🗑️ **Select Channel to Delete:**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-
     elif query.data.startswith("fj_do_del:") and await is_admin(user_id):
         chat_id_to_del = query.data.split(":", 1)[1]
         await channels_col.delete_one({"chat_id": chat_id_to_del})
@@ -385,14 +385,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         fj_status = await get_setting("force_join_status", "ON")
         channels = await channels_col.find({}).to_list(length=50)
-        text = f"📢 **Force Join System Control**\n\nSTATUS: `{fj_status}`\n\n**Managed Channels:**\n"
+        text = f"📢 **Force Join System Control**\n\nSTATUS: `{fj_status}`\n\n**Managed Channels:**"
+        keyboard = []
         for c in channels:
-            text += f"- {c.get('name')} (`{c.get('chat_id')}`)\n"
-        keyboard = [
-            [InlineKeyboardButton("🟢 Turn ON", callback_data="set_fj:ON"), InlineKeyboardButton("🔴 Turn OFF", callback_data="set_fj:OFF")],
-            [InlineKeyboardButton("➕ Add Channel", callback_data="fj_add_ch"), InlineKeyboardButton("🗑️ Delete Channel", callback_data="fj_del_ch_list")],
-            [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
-        ]
+            keyboard.append([
+                InlineKeyboardButton(f"📢 {c.get('name')} (`{c.get('chat_id')}`)", callback_data="noop"),
+                InlineKeyboardButton("🗑️ রিমুভ", callback_data=f"fj_do_del:{c.get('chat_id')}")
+            ])
+        status_toggle_btn = "🔴 Turn OFF" if fj_status == "ON" else "🟢 Turn ON"
+        toggle_val = "OFF" if fj_status == "ON" else "ON"
+        keyboard.append([InlineKeyboardButton(status_toggle_btn, callback_data=f"set_fj:{toggle_val}")])
+        keyboard.append([InlineKeyboardButton("➕ Add Channel", callback_data="fj_add_ch")])
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     # --- 3. User Management & Analytics ---
@@ -411,8 +415,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"নিচের অপশনগুলো থেকে ম্যানেজ করুন:"
         )
         keyboard = [
-            [InlineKeyboardButton("💰 Manage Balance", callback_data="us_m_balance"), InlineKeyboardButton("🚫 Ban / Unban User", callback_data="us_m_ban")],
-            [InlineKeyboardButton("👤 User Profile Details", callback_data="us_m_profile"), InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
+            [InlineKeyboardButton("💰 Balance", callback_data="us_m_balance"), InlineKeyboardButton("🚫 Ban/Unban", callback_data="us_m_ban")],
+            [InlineKeyboardButton("👤 Profile", callback_data="us_m_profile"), InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
         ]
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -431,22 +435,29 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         USER_MANAGE_STATE[user_id] = {"action": "profile"}
         await query.message.edit_text("👤 ইউজারের ফুল ডিটেইলস দেখতে তার **Chat ID** বা **Username** লিখে পাঠান:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_usermgmt_menu")]]))
 
-    # --- 4. OTP Group Management ---
+    # --- 4. OTP Group Management (Inline Buttons for Groups List) ---
     elif query.data == "adm_otpgroup_menu" and await is_admin(user_id):
         await query.answer()
         groups = await forward_groups_col.find({}).to_list(length=50)
-        text = f"💬 **OTP Group Management**\n\n**Configured Forward Groups:**\n"
-        if not groups:
-            text += "⚠️ কোনো ফরওয়ার্ড গ্রুপ সেট করা হয়নি (ডিফল্ট গ্রুপ এক্টিভ আছে)।\n"
-        else:
+        text = f"💬 **OTP Group Management**\n\n**Configured Forward Groups:**"
+        
+        keyboard = []
+        if groups:
             for g in groups:
-                text += f"- `{g.get('group_id')}` ({g.get('name', 'Group')})\n"
+                g_id = g.get('group_id')
+                g_name = g.get('name', 'OTP Group')
+                # প্রতিটি ওটিপি গ্রুপের জন্য ইনলাইন বাটন ও ডিলিট অপশন
+                keyboard.append([
+                    InlineKeyboardButton(f"🛡️ {g_name} (`{g_id}`)", callback_data=f"noop_group_{g_id}"),
+                    InlineKeyboardButton("❌ রিমুভ", callback_data=f"ot_do_del:{g_id}")
+                ])
+        else:
+            text += "\n⚠️ কোনো ফরওয়ার্ড গ্রুপ সেট করা হয়নি।"
 
-        keyboard = [
-            [InlineKeyboardButton("✏️ Edit OTP Button Link", callback_data="ot_edit_link")],
-            [InlineKeyboardButton("➕ Add Forward Group", callback_data="ot_add_group"), InlineKeyboardButton("🗑️ Manage/Delete Groups", callback_data="ot_del_group_list")],
-            [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
-        ]
+        keyboard.append([InlineKeyboardButton("✏️ Edit OTP Button Link", callback_data="ot_edit_link")])
+        keyboard.append([InlineKeyboardButton("➕ Add Forward Group", callback_data="ot_add_group")])
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
+        
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data == "ot_edit_link" and await is_admin(user_id):
@@ -459,32 +470,22 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         FORWARD_GROUP_ADD_STATE[user_id] = {"step": "GET_ID"}
         await query.message.edit_text("➕ নতুন ফরওয়ার্ড গ্রুপের **Chat ID** লিখে পাঠান:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_otpgroup_menu")]]))
 
-    elif query.data == "ot_del_group_list" and await is_admin(user_id):
-        await query.answer()
-        groups = await forward_groups_col.find({}).to_list(length=50)
-        if not groups:
-            await query.answer("ডিলিট করার মতো কোনো গ্রুপ নেই!", show_alert=True)
-            return
-        keyboard = []
-        for g in groups:
-            keyboard.append([InlineKeyboardButton(f"❌ Delete `{g.get('group_id')}`", callback_data=f"ot_do_del:{g.get('group_id')}")])
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_otpgroup_menu")])
-        await query.message.edit_text("🗑️ **Select Group to Delete:**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-
     elif query.data.startswith("ot_do_del:") and await is_admin(user_id):
         gid = query.data.split(":", 1)[1]
         await forward_groups_col.delete_one({"group_id": gid})
         await query.answer("✅ Group successfully deleted!", show_alert=True)
         
         groups = await forward_groups_col.find({}).to_list(length=50)
-        text = f"💬 **OTP Group Management**\n\n**Configured Forward Groups:**\n"
+        text = f"💬 **OTP Group Management**\n\n**Configured Forward Groups:**"
+        keyboard = []
         for g in groups:
-            text += f"- `{g.get('group_id')}`\n"
-        keyboard = [
-            [InlineKeyboardButton("✏️ Edit OTP Button Link", callback_data="ot_edit_link")],
-            [InlineKeyboardButton("➕ Add Forward Group", callback_data="ot_add_group"), InlineKeyboardButton("🗑️ Manage/Delete Groups", callback_data="ot_del_group_list")],
-            [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
-        ]
+            keyboard.append([
+                InlineKeyboardButton(f"🛡️ {g.get('name', 'Group')} (`{g.get('group_id')}`)", callback_data="noop"),
+                InlineKeyboardButton("❌ রিমুভ", callback_data=f"ot_do_del:{g.get('group_id')}")
+            ])
+        keyboard.append([InlineKeyboardButton("✏️ Edit OTP Button Link", callback_data="ot_edit_link")])
+        keyboard.append([InlineKeyboardButton("➕ Add Forward Group", callback_data="ot_add_group")])
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     # --- 5. X-Rony Control Panel ---
@@ -508,10 +509,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"নিচের অপশনগুলো থেকে মান পরিবর্তন করুন:"
         )
         keyboard = [
-            [InlineKeyboardButton("💸 Toggle Withdraw ON/OFF", callback_data="xr_toggle_wd")],
-            [InlineKeyboardButton("💵 Set Min Withdraw", callback_data="xr_set_minwd"), InlineKeyboardButton("👥 Set Refer Bonus", callback_data="xr_set_ref")],
-            [InlineKeyboardButton("⚡ Set OTP Rate", callback_data="xr_set_otprate"), InlineKeyboardButton("📦 Set Num/Req Count", callback_data="xr_set_numreq")],
-            [InlineKeyboardButton("⏱️ Set Cooldown", callback_data="xr_set_cooldown"), InlineKeyboardButton("💳 Payment Methods", callback_data="xr_pay_methods")],
+            [InlineKeyboardButton("💸 Toggle Withdraw", callback_data="xr_toggle_wd")],
+            [InlineKeyboardButton("💵 Min Withdraw", callback_data="xr_set_minwd"), InlineKeyboardButton("👥 Refer Bonus", callback_data="xr_set_ref")],
+            [InlineKeyboardButton("⚡ OTP Rate", callback_data="xr_set_otprate"), InlineKeyboardButton("📦 Num/Req", callback_data="xr_set_numreq")],
+            [InlineKeyboardButton("⏱️ Cooldown", callback_data="xr_set_cooldown"), InlineKeyboardButton("💳 Pay Methods", callback_data="xr_pay_methods")],
             [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
         ]
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -538,10 +539,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⏱️ Cooldown Timer: `{cooldown}s`\n"
         )
         keyboard = [
-            [InlineKeyboardButton("💸 Toggle Withdraw ON/OFF", callback_data="xr_toggle_wd")],
-            [InlineKeyboardButton("💵 Set Min Withdraw", callback_data="xr_set_minwd"), InlineKeyboardButton("👥 Set Refer Bonus", callback_data="xr_set_ref")],
-            [InlineKeyboardButton("⚡ Set OTP Rate", callback_data="xr_set_otprate"), InlineKeyboardButton("📦 Set Num/Req Count", callback_data="xr_set_numreq")],
-            [InlineKeyboardButton("⏱️ Set Cooldown", callback_data="xr_set_cooldown"), InlineKeyboardButton("💳 Payment Methods", callback_data="xr_pay_methods")],
+            [InlineKeyboardButton("💸 Toggle Withdraw", callback_data="xr_toggle_wd")],
+            [InlineKeyboardButton("💵 Min Withdraw", callback_data="xr_set_minwd"), InlineKeyboardButton("👥 Refer Bonus", callback_data="xr_set_ref")],
+            [InlineKeyboardButton("⚡ OTP Rate", callback_data="xr_set_otprate"), InlineKeyboardButton("📦 Num/Req", callback_data="xr_set_numreq")],
+            [InlineKeyboardButton("⏱️ Cooldown", callback_data="xr_set_cooldown"), InlineKeyboardButton("💳 Pay Methods", callback_data="xr_pay_methods")],
             [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
         ]
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -598,7 +599,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "🏆 **OTP Hunter Leaderboard** 🏆\n\n"
         rank_emojis = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
         if not top_users:
-            text += "⚠️ বর্তমানে কোনো লিডারবোর্ড ডাটা নেই।"
+            text += "⚠️ বর্তমানে কোনো লিডারবোর্ড ডাটা নেই。"
         else:
             for index, u in enumerate(top_users):
                 emoji = rank_emojis[index] if index < 10 else "👤"
