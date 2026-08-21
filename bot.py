@@ -20,6 +20,7 @@ numbers_col = db.numbers
 assigned_col = db.assigned_numbers
 traffic_col = db.traffic
 settings_col = db.settings
+withdrawals_col = db.withdrawals
 
 # --- Permanent Links & Info ---
 MAIN_CHANNEL_URL = "https://t.me/Zentrix_Officiall"
@@ -29,12 +30,13 @@ UPDATE_CHANNEL_URL = "https://t.me/Zentrix_Update"
 UPDATE_CHANNEL_ID = "@Zentrix_Update"
 
 OTP_GROUP_URL = "https://t.me/+pBpZWtQC4qswODI1"
-SUPPORT_ADMIN = "@ranaXvou"
+ADMIN_WITHDRAW_GROUP_ID = "-100mjyvnkkFvcQ5ODQ1" # অথবা আপনার গ্রুপের সংখ্যাসূচক চ্যাট আইডি (যেমন: -100xxxxxxxxxx)
 SUPPORT_URL = "https://t.me/ranaXvou"
 
 ADMIN_UPLOAD_STATE = {}
 USER_SEARCH_STATE = {}
 ADMIN_SETTINGS_STATE = {}
+USER_WITHDRAW_STATE = {}
 
 # --- Dynamic Settings Getter/Setter ---
 async def get_setting(key, default_val):
@@ -88,12 +90,9 @@ def admin_panel_keyboard():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
-    if user.id in ADMIN_UPLOAD_STATE:
-        del ADMIN_UPLOAD_STATE[user.id]
-    if user.id in USER_SEARCH_STATE:
-        del USER_SEARCH_STATE[user.id]
-    if user.id in ADMIN_SETTINGS_STATE:
-        del ADMIN_SETTINGS_STATE[user.id]
+    for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE]:
+        if user.id in state_dict:
+            del state_dict[user.id]
 
     args = context.args
     referrer_id = None
@@ -141,7 +140,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await update.message.reply_text(
             "⚠️ **বটটি ব্যবহার করতে হলে অবশ্যই আমাদের চ্যানেল এবং গ্রুপগুলোতে জয়েন থাকতে হবে!**\n\n"
-            "দয়া করে নিচের লিংকগুলোতে জয়েন করুন এবং তারপর যথারীতি চেক করুন।",
+            "দয়া করে নিচের লিংকগুলোতে জয়েন করুন এবং তারপর চেক করুন।",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
@@ -198,6 +197,157 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
         except Exception:
             pass
+
+    elif query.data == "withdraw_menu":
+        await query.answer()
+        user_data = await users_col.find_one({"user_id": user_id})
+        balance = user_data.get("balance", 0.0) if user_data else 0.0
+        
+        # Minimum withdrawal check (1 Dollar / 1 Unit equivalent, change if needed e.g., 1.0)
+        if balance < 1.0:
+            await query.message.reply_text(
+                f"❌ দুঃখিত! উইথড্র করার জন্য আপনার অন্তত `1.0৳ / $` ব্যালেন্স থাকতে হবে।\n"
+                f"আপনার বর্তমান ব্যালেন্স: `{balance:.2f}৳`\n\n"
+                f"💡 আরও নাম্বার ভেরিফাই করে বা রেফার করে ব্যালেন্স বাড়ান!",
+                parse_mode="Markdown"
+            )
+            return
+        
+        USER_WITHDRAW_STATE[user_id] = {"step": "SELECT_METHOD"}
+        keyboard = [
+            [InlineKeyboardButton("📱 বিকাশ (Bkash)", callback_data="wd_meth:Bkash")],
+            [InlineKeyboardButton("📱 নগদ (Nagad)", callback_data="wd_meth:Nagad")],
+            [InlineKeyboardButton("🌐 Binance (BEP20)", callback_data="wd_meth:Binance")],
+            [InlineKeyboardButton("🔙 Back to Balance", callback_data="back_to_balance")]
+        ]
+        await query.message.edit_text(
+            f"💸 **Withdrawal Portal**\n\n"
+            f"আপনার বর্তমান ব্যালেন্স: `{balance:.2f}৳`\n"
+            f"দয়া করে আপনার পেমেন্ট মেথড সিলেক্ট করুন:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    elif query.data.startswith("wd_meth:"):
+        await query.answer()
+        method = query.data.split(":", 1)[1]
+        USER_WITHDRAW_STATE[user_id] = {"step": "GET_ACCOUNT", "method": method}
+        
+        acc_prompt = "বিকাশ নাম্বার" if method == "Bkash" else ("নগদ নাম্বার" if method == "Nagad" else "Binance BEP20 Address")
+        await query.message.edit_text(
+            f"💳 Selected Method: **{method}**\n\n"
+            f"দয়া করে আপনার সঠিক **{acc_prompt}** লিখে পাঠান:",
+            parse_mode="Markdown"
+        )
+
+    elif query.data.startswith("wd_conf:"):
+        await query.answer()
+        parts = query.data.split(":")
+        action = parts[1]
+        target_user_id = int(parts[2])
+        amount = float(parts[3])
+        
+        if action == "yes":
+            await query.message.edit_text(f"{query.message.text}\n\n✅ **Status: Confirmed & Completed by Admin**", parse_mode="Markdown")
+            try:
+                await context.bot.send_message(
+                    chat_id=target_user_id,
+                    text=f"🎉 **অভিনন্দন!** আপনার উইথড্র রিকোয়েস্টটি সফলভাবে সম্পূর্ণ হয়েছে এবং পেমেন্ট পাঠিয়ে দেওয়া হয়েছে। ✅",
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+        elif action == "no":
+            # Refund balance
+            await users_col.update_one({"user_id": target_user_id}, {"$inc": {"balance": amount}})
+            await query.message.edit_text(f"{query.message.text}\n\n❌ **Status: Cancelled & Refunded**", parse_mode="Markdown")
+            try:
+                await context.bot.send_message(
+                    chat_id=target_user_id,
+                    text=f"❌ আপনার উইথড্র রিকোয়েস্টটি বাতিল করা হয়েছে এবং `{amount}৳` আপনার ব্যালেন্সে ফিরিয়ে দেওয়া হয়েছে।",
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+
+    elif query.data.startswith("wd_user_conf:"):
+        await query.answer()
+        action = query.data.split(":", 1)[1]
+        if action == "yes":
+            data = USER_WITHDRAW_STATE.get(user_id)
+            if not data:
+                await query.message.edit_text("⚠️ সেশন মেয়াদোত্তীর্ণ হয়ে গেছে। দয়া করে আবার ব্যালেন্স থেকে উইথড্র করুন।")
+                return
+            
+            method = data["method"]
+            account = data["account"]
+            amount = data["amount"]
+            
+            # Deduct balance
+            await users_col.update_one({"user_id": user_id}, {"$inc": {"balance": -amount}})
+            if user_id in USER_WITHDRAW_STATE:
+                del USER_WITHDRAW_STATE[user_id]
+                
+            await query.message.edit_text(
+                f"🎉 **উইথড্র রিকোয়েস্ট সফলভাবে জমা হয়েছে!**\n\n"
+                f"💳 Method: `{method}`\n"
+                f"📥 Account: `{account}`\n"
+                f"💰 Amount: `{amount:.2f}৳`\n\n"
+                f"⏳ রিকোয়েস্টটি রিভিউ করে আগামী **২৪ ঘণ্টার মধ্যে** পেমেন্ট সম্পন্ন করা হবে। ধন্যবাদ!",
+                parse_mode="Markdown"
+            )
+            
+            # Send to admin group
+            username_str = f"@{query.from_user.username}" if query.from_user.username else "No Username"
+            admin_msg = (
+                f"🚨 **New Withdrawal Request!**\n\n"
+                f"👤 User ID: `{user_id}`\n"
+                f"🔗 Username: {username_str}\n"
+                f"💳 Method: `{method}`\n"
+                f"📥 Account/Address: `{account}`\n"
+                f"💵 Amount: `{amount:.2f}৳`"
+            )
+            admin_keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Confirm", callback_data=f"wd_conf:yes:{user_id}:{amount}"),
+                    InlineKeyboardButton("❌ Cancel", callback_data=f"wd_conf:no:{user_id}:{amount}")
+                ]
+            ])
+            try:
+                await context.bot.send_message(
+                    chat_id=OTP_GROUP_URL, # অথবা আপনার নির্দিষ্ট অ্যাডমিন গ্রুপ আইডি দিয়ে দিতে পারেন
+                    text=admin_msg,
+                    parse_mode="Markdown",
+                    reply_markup=admin_keyboard
+                )
+            except Exception as e:
+                logging.info(f"Failed to send withdraw request to admin group: {e}")
+                
+        else:
+            if user_id in USER_WITHDRAW_STATE:
+                del USER_WITHDRAW_STATE[user_id]
+            await query.message.edit_text("❌ উইথড্র রিকোয়েস্ট বাতিল করা হয়েছে। মেনুতে ফিরে যান।")
+
+    elif query.data == "back_to_balance":
+        await query.answer()
+        if user_id in USER_WITHDRAW_STATE:
+            del USER_WITHDRAW_STATE[user_id]
+        user_data = await users_col.find_one({"user_id": user_id})
+        balance = user_data.get("balance", 0.0) if user_data else 0.0
+        total_earned = user_data.get("total_earned", 0.0) if user_data else 0.0
+        current_otp_rate = await get_setting("otp_rate", 0.60)
+        
+        balance_text = (
+            f"👤 **User Account Dashboard**\n\n"
+            f"💰 Current Balance : `{balance:.2f}৳`\n"
+            f"📈 Total Earned : `{total_earned:.2f}৳`\n"
+            f"💸 Withdrawal Status : `Active`\n\n"
+            f"⚡ Earn per OTP: `{current_otp_rate}৳`"
+        )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💸 Withdraw Balance", callback_data="withdraw_menu")]
+        ])
+        await query.message.edit_text(balance_text, parse_mode="Markdown", reply_markup=keyboard)
 
     elif query.data.startswith("set_traf:"):
         if user_id != OWNER_ID:
@@ -432,25 +582,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if text == "🔙 Back":
-        # Clear states cleanly
-        if user_id in ADMIN_UPLOAD_STATE:
-            del ADMIN_UPLOAD_STATE[user_id]
-        if user_id in USER_SEARCH_STATE:
-            del USER_SEARCH_STATE[user_id]
-        if user_id in ADMIN_SETTINGS_STATE:
-            del ADMIN_SETTINGS_STATE[user_id]
+        for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE]:
+            if user_id in state_dict:
+                del state_dict[user_id]
             
-        # If user is admin and was inside an admin sub-menu or panel state, return to admin panel, 
-        # but if they were in regular user menus (like search), return to main menu.
-        # Here we check if the user explicitly wants to go back to Main Menu or Admin Panel based on context.
-        # To make it foolproof: if user is OWNER_ID, let's provide the main menu or admin panel safely.
-        if user_id == OWNER_ID:
-            # Let's check if they came from Admin Panel or Main Menu. 
-            # Safest fix: if they click Back, show Main Menu, and if they want Admin Panel they can click Admin Panel button. 
-            # Or if they were in Admin submenus, back goes to Admin Panel. Let's handle it smartly:
-            await update.message.reply_text("👇 Main Menu:", reply_markup=main_menu_keyboard(user_id))
-            return
-        
         await update.message.reply_text("👇 Main Menu:", reply_markup=main_menu_keyboard(user_id))
         return
 
@@ -467,6 +602,62 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
+
+    # Withdraw State Handling
+    if user_id in USER_WITHDRAW_STATE:
+        state = USER_WITHDRAW_STATE[user_id]
+        step = state.get("step")
+        
+        if step == "GET_ACCOUNT":
+            state["account"] = text.strip()
+            state["step"] = "GET_AMOUNT"
+            USER_WITHDRAW_STATE[user_id] = state
+            await update.message.reply_text(
+                "💰 আপনি কত টাকা উইথড্র করতে চান সেই অ্যামাউন্ট লিখে পাঠান (যেমন: `1.5` বা `5`):",
+                parse_mode="Markdown",
+                reply_markup=back_keyboard()
+            )
+            return
+            
+        elif step == "GET_AMOUNT":
+            try:
+                amount = float(text.strip())
+                user_data = await users_col.find_one({"user_id": user_id})
+                balance = user_data.get("balance", 0.0) if user_data else 0.0
+                
+                if amount <= 0:
+                    await update.message.reply_text("❌ অ্যামাউন্ট সঠিক নয়। আবার চেষ্টা করুন:", reply_markup=back_keyboard())
+                    return
+                if amount > balance:
+                    await update.message.reply_text(f"❌ আপনার পর্যাপ্ত ব্যালেন্স নেই! আপনার বর্তমান ব্যালেন্স: `{balance:.2f}৳`", parse_mode="Markdown", reply_markup=back_keyboard())
+                    return
+                if amount < 1.0:
+                    await update.message.reply_text("❌ সর্বনিম্ন ১ টাকা বা ডলার উইথড্র করতে হবে। সঠিক অ্যামাউন্ট দিন:", reply_markup=back_keyboard())
+                    return
+                
+                state["amount"] = amount
+                method = state["method"]
+                account = state["account"]
+                
+                confirm_keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("✅ Confirm", callback_data="wd_user_conf:yes"),
+                        InlineKeyboardButton("❌ Cancel", callback_data="wd_user_conf:no")
+                    ]
+                ])
+                await update.message.reply_text(
+                    f"📋 **Withdrawal Summary**\n\n"
+                    f"💳 Method: `{method}`\n"
+                    f"📥 Account: `{account}`\n"
+                    f"💵 Amount: `{amount:.2f}৳`\n\n"
+                    f"দয়া করে তথ্যগুলো যাচাই করুন এবং কনফার্ম করুন:",
+                    parse_mode="Markdown",
+                    reply_markup=confirm_keyboard
+                )
+                return
+            except ValueError:
+                await update.message.reply_text("❌ দয়া করে সঠিক সংখ্যা লিখুন:", reply_markup=back_keyboard())
+                return
 
     # Admin Settings State (OTP Rate / Ref Bonus)
     if user_id == OWNER_ID and user_id in ADMIN_SETTINGS_STATE:
@@ -651,7 +842,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💸 Withdrawal Status : `Active`\n\n"
             f"⚡ Earn per OTP: `{current_otp_rate}৳`"
         )
-        await update.message.reply_text(balance_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💸 Withdraw Balance", callback_data="withdraw_menu")]
+        ])
+        await update.message.reply_text(balance_text, parse_mode="Markdown", reply_markup=keyboard)
         
     elif text == "🆘 SUPPORT":
         support_text = (
@@ -677,7 +871,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif text == "⚙️ Number Management" and user_id == OWNER_ID:
         ADMIN_UPLOAD_STATE[user_id] = {"step": "GET_SERVICE"}
-        await update.message.reply_text("⚙️ কোন সার্ভিসের নাম্বার আপলোড করবেন নাম লিখুন (যেমনকাল: Facebook):", parse_mode="Markdown", reply_markup=back_keyboard())
+        await update.message.reply_text("⚙️ কোন সার্ভিসের নাম্বার আপলোড করবেন নাম লিখুন (যেমন: Facebook):", parse_mode="Markdown", reply_markup=back_keyboard())
 
     elif text == "⚙️ Price & Ref Settings" and user_id == OWNER_ID:
         curr_rate = await get_setting("otp_rate", 0.60)
@@ -711,7 +905,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         if user_id == OWNER_ID and text == "":
             pass
-        elif not update.message.document and user_id not in ADMIN_UPLOAD_STATE and user_id not in USER_SEARCH_STATE and user_id not in ADMIN_SETTINGS_STATE:
+        elif not update.message.document and not any(user_id in d for d in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE]):
             await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন।", reply_markup=main_menu_keyboard(user_id))
 
 async def extra_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -739,7 +933,7 @@ async def main():
     
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, otp_group_listener))
 
-    print("Zentrix Bot is running successfully with all fixes...")
+    print("Zentrix Bot is running successfully with Withdrawal System...")
     
     async def main_runner():
         await application.initialize()
