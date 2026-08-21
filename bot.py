@@ -1708,7 +1708,7 @@ async def main():
     
     # ব্যাকএন্ডে গ্রুপ বা চ্যানেলের যেকোনো মেসেজ ফিল্টার করার হ্যান্ডলার
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, otp_group_listener))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.SUPERGROUPS, otp_group_listener))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.SUPERGROUP, otp_group_listener))
 
     print("Zentrix Bot with RanaX Auto-Forwarder is running successfully...")
     
