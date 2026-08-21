@@ -204,7 +204,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
 
-    # 3. Click Country -> Show Numbers for that Service & Country (Fixed with Regex)
+    # 3. Click Country -> Show Numbers as Buttons (Like Aizen SMS style)
     elif query.data.startswith("sel_count:"):
         await query.answer()
         parts = query.data.split(":", 2)
@@ -220,21 +220,32 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "country": {"$regex": f"^{country}$", "$options": "i"},
             "status": "Available"
         })
-        numbers = await cursor.to_list(length=30)
+        numbers = await cursor.to_list(length=20)  # Maximum 20 numbers to fit nicely
         
         if numbers:
-            num_list = "\n".join([f"🔹 `{row['phone_number']}`" for row in numbers])
-            text_msg = f"📱 **Available Numbers (`{service_name}` - `{country}`):**\n\n{num_list}\n\n🔗 Main Channel: {MAIN_CHANNEL_URL}"
-        else:
-            # নোটিস সিস্টেম: নাম্বার না থাকলে সুন্দর নোটিস দেখাবে
-            text_msg = f"⚠️ দুঃখিত! `{service_name}` ({country}) এ বর্তমানে কোনো নাম্বার এভেইলেবল নেই।"
+            text_msg = f"🌐 Your **{country.upper()}** 📱 **{service_name.upper()}** NUMBER"
+            keyboard = []
+            for row in numbers:
+                num = row['phone_number']
+                # প্রতিটি নাম্বার একটি করে আকর্ষণীয় ইনলাইন বাটনে থাকবে (ক্লিক করলে বাটন থেকে কপি করা বা দেখা যাবে)
+                keyboard.append([InlineKeyboardButton(f"📞 {num}", callback_data=f"copy_num:{num}")])
             
-        reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Countries", callback_data=f"sel_serv:{service_name}")]])
+            # নিচে ব্যাক বা অন্যান্য অপشن বাটন
+            keyboard.append([InlineKeyboardButton("🔙 Back to Countries", callback_data=f"sel_serv:{service_name}")])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+        else:
+            text_msg = f"⚠️ দুঃখিত! `{service_name}` ({country}) এ বর্তমানে কোনো নাম্বার এভেইলেবল নেই।"
+            reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Countries", callback_data=f"sel_serv:{service_name}")]])
         
         try:
             await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
         except Exception:
             await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
+
+    # Number click feedback
+    elif query.data.startswith("copy_num:"):
+        num = query.data.split(":", 1)[1]
+        await query.answer(f"Selected Number: {num}", show_alert=True)
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
