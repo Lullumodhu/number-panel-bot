@@ -18,6 +18,7 @@ db = client.zentrix_bot
 users_col = db.users
 numbers_col = db.numbers
 assigned_col = db.assigned_numbers
+traffic_col = db.traffic
 
 # --- Permanent Links & Info ---
 MAIN_CHANNEL_URL = "https://t.me/Zentrix_Officiall"
@@ -65,8 +66,8 @@ def back_keyboard():
 def admin_panel_keyboard():
     keyboard = [
         [KeyboardButton("📊 Overview"), KeyboardButton("📢 Broadcast")],
-        [KeyboardButton("⚙️ Number Management"), KeyboardButton("👥 User Management")],
-        [KeyboardButton("🔙 Back")]
+        [KeyboardButton("⚙️ Number Management"), KeyboardButton("🚦 Traffic Settings")],
+        [KeyboardButton("👥 User Management"), KeyboardButton("🔙 Back")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -119,7 +120,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "check_join":
         is_joined = await check_force_join(user_id, context)
         if is_joined:
-            await query.answer("✅ ধন্যবাদ! সফলভাবে ভেরিফাই করা হয়েছে।", show_alert=False)
+            await query.answer("✅ ধন্যবাদ! সফলভাবে ভেরিফাই করা হয়েছে。", show_alert=False)
             try:
                 await query.message.delete()
             except Exception:
@@ -141,6 +142,93 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=user_id, text=welcome_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
         else:
             await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন।", show_alert=True)
+
+    elif query.data == "refresh_traffic":
+        await query.answer("🔄 ট্রাফিক রিফ্রেশ করা হয়েছে!")
+        traffic_cursor = traffic_col.find({})
+        traffic_list = await traffic_cursor.to_list(length=100)
+        
+        if not traffic_list:
+            text = "📊 বর্তমানে কোনো ট্রাফিক আপডেট নেই।"
+        else:
+            text = "🚦 **30 MINUTE LIVE TRAFFIC**\n\n"
+            for item in traffic_list:
+                text += f"🌍 **{item['service']}**\n{item['country']} : {item['status']} {item['icon']}\n\n"
+        
+        keyboard = [[InlineKeyboardButton("🔄 Refresh", callback_data="refresh_traffic")]]
+        try:
+            await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+        except Exception:
+            pass
+
+    elif query.data.startswith("set_traf:"):
+        if user_id != OWNER_ID:
+            await query.answer("❌ আপনার এই পার্মিশন নেই!", show_alert=True)
+            return
+        
+        _, country, status = query.data.split(":", 2)
+        icons = {"HIGH": "🟢", "MEDIUM": "🟡", "LOW": "🔴"}
+        icon = icons.get(status, "⚪")
+        
+        await traffic_col.update_one(
+            {"country": country},
+            {"$set": {"status": status, "icon": icon}},
+            upsert=True
+        )
+        await query.answer(f"✅ {country} এর ট্রাফিক {status} করা হয়েছে!")
+        
+        # প্যানেল আপডেট করা
+        traffic_list = await traffic_col.find({}).to_list(length=100)
+        keyboard = []
+        for item in traffic_list:
+            c = item['country']
+            keyboard.append([
+                InlineKeyboardButton(f"{c} [{item['status']}]", callback_data="noop"),
+                InlineKeyboardButton("🟢", callback_data=f"set_traf:{c}:HIGH"),
+                InlineKeyboardButton("🟡", callback_data=f"set_traf:{c}:MEDIUM"),
+                InlineKeyboardButton("🔴", callback_data=f"set_traf:{c}:LOW"),
+            ])
+        keyboard.append([InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")])
+        
+        try:
+            await query.message.edit_text("🚦 **Traffic Status Management**\n\nনিচ থেকে যেকোনো কান্ট্রির ট্রাফিক স্ট্যাটাস পরিবর্তন করুন:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+        except Exception:
+            pass
+
+    elif query.data == "admin_traffic_panel":
+        if user_id != OWNER_ID:
+            return
+        await query.answer()
+        traffic_list = await traffic_col.find({}).to_list(length=100)
+        if not traffic_list:
+            await query.message.edit_text("⚠️ কোনো কান্ট্রি বা ডাটা পাওয়া যায়নি। আগে নাম্বার আপলোড করুন।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_back")]]))
+            return
+            
+        keyboard = []
+        for item in traffic_list:
+            c = item['country']
+            keyboard.append([
+                InlineKeyboardButton(f"{c} [{item['status']}]", callback_data="noop"),
+                InlineKeyboardButton("🟢", callback_data=f"set_traf:{c}:HIGH"),
+                InlineKeyboardButton("🟡", callback_data=f"set_traf:{c}:MEDIUM"),
+                InlineKeyboardButton("🔴", callback_data=f"set_traf:{c}:LOW"),
+            ])
+        keyboard.append([InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")])
+        
+        try:
+            await query.message.edit_text("🚦 **Traffic Status Management**\n\nনিচ থেকে যেকোনো কান্ট্রির ট্রাফিক স্ট্যাটাস পরিবর্তন করুন:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+        except Exception:
+            pass
+
+    elif query.data == "admin_back":
+        if user_id != OWNER_ID:
+            return
+        await query.answer()
+        try:
+            await query.message.edit_text("👑 **Admin Control Panel**", parse_mode="Markdown")
+            await context.bot.send_message(chat_id=user_id, text="👑 **Admin Control Panel**", reply_markup=admin_panel_keyboard())
+        except Exception:
+            pass
 
     elif query.data in ["get_stock_click", "get_number_menu"]:
         await query.answer()
@@ -428,9 +516,15 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             docs = [{"service_name": service_name, "country": country, "phone_number": num, "status": "Available"} for num in numbers_list]
             if docs:
                 await numbers_col.insert_many(docs)
+                # অটো ট্রাফিক লিস্টে যুক্ত করা (ডিফল্ট MEDIUM)
+                await traffic_col.update_one(
+                    {"country": country, "service": service_name},
+                    {"$setOnInsert": {"status": "MEDIUM", "icon": "🟡"}},
+                    upsert=True
+                )
             del ADMIN_UPLOAD_STATE[user_id]
             
-            await update.message.reply_text(f"🎉 সফলভাবে {len(numbers_list)}টি নাম্বার যুক্ত হয়েছে!", reply_markup=admin_panel_keyboard())
+            await update.message.reply_text(f"🎉 সফলভাবে {len(numbers_list)}টি নাম্বার যুক্ত হয়েছে এবং ট্রাফিক লিস্টে আপডেট হয়েছে!", reply_markup=admin_panel_keyboard())
             return
 
     if user_id == OWNER_ID and update.message.document and user_id in ADMIN_UPLOAD_STATE:
@@ -446,9 +540,18 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 os.remove(file_path)
             
             numbers_list = [line.strip() for line in content.split("\n") if line.strip()]
-            docs = [{"service_name": state_data["service"], "country": state_data["country"], "phone_number": num, "status": "Available"} for num in numbers_list]
+            service_name = state_data["service"]
+            country = state_data["country"]
+            
+            docs = [{"service_name": service_name, "country": country, "phone_number": num, "status": "Available"} for num in numbers_list]
             if docs:
                 await numbers_col.insert_many(docs)
+                # অটো ট্রাফিক লিস্টে যুক্ত করা
+                await traffic_col.update_one(
+                    {"country": country, "service": service_name},
+                    {"$setOnInsert": {"status": "MEDIUM", "icon": "🟡"}},
+                    upsert=True
+                )
             del ADMIN_UPLOAD_STATE[user_id]
             
             await update.message.reply_text(f"🎉 ফাইল থেকে সফলভাবে {len(numbers_list)}টি নাম্বার যুক্ত হয়েছে!", reply_markup=admin_panel_keyboard())
@@ -470,7 +573,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🔎 **Search Number**\n\nদয়া করে কান্ট্রি কোড বা সিরিয়াল নাম্বার লিখে পাঠান (যেমন: `223` বা `22357`):", parse_mode="Markdown", reply_markup=back_keyword())
         
     elif text == "🚦 TRAFFIC":
-        await update.message.reply_text(f"🚦 সিস্টেমের বর্তমান ট্রাফিক স্বাভাবিক আছে。\n\nঅফিশিয়াল আপডেট: {UPDATE_CHANNEL_URL}", parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
+        traffic_list = await traffic_col.find({}).to_list(length=100)
+        if not traffic_list:
+            traffic_text = "📊 বর্তমানে কোনো লাইভ ট্রাফিক ডাটা নেই।"
+        else:
+            traffic_text = "🚦 **30 MINUTE LIVE TRAFFIC**\n\n"
+            for item in traffic_list:
+                traffic_text += f"🌍 **{item['service']}**\n{item['country']} : {item['status']} {item['icon']}\n\n"
+        
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data="refresh_traffic")]])
+        await update.message.reply_text(traffic_text, parse_mode="Markdown", reply_markup=keyboard)
         
     elif text == "👥 REFERRAL":
         bot_username = context.bot.username
@@ -504,7 +616,26 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif text == "⚙️ Number Management" and user_id == OWNER_ID:
         ADMIN_UPLOAD_STATE[user_id] = {"step": "GET_SERVICE"}
-        await update.message.reply_text("⚙️ কোন সার্ভিসের নাম্বার আপলোড করবেন নাম লিখুন:", parse_mode="Markdown", reply_markup=back_keyboard())
+        await update.message.reply_text("⚙️ কোন সার্ভিসের নাম্বার আপলোড করবেন নাম লিখুন (যেমন: Facebook):", parse_mode="Markdown", reply_markup=back_keyboard())
+
+    elif text == "🚦 Traffic Settings" and user_id == OWNER_ID:
+        traffic_list = await traffic_col.find({}).to_list(length=100)
+        if not traffic_list:
+            await update.message.reply_text("⚠️ বর্তমানে কোনো কান্ট্রি বা ট্রাফিক ডাটা নেই। আগে নাম্বার আপলোড করুন।", reply_markup=admin_panel_keyboard())
+            return
+            
+        keyboard = []
+        for item in traffic_list:
+            c = item['country']
+            keyboard.append([
+                InlineKeyboardButton(f"{c} [{item['status']}]", callback_data="noop"),
+                InlineKeyboardButton("🟢", callback_data=f"set_traf:{c}:HIGH"),
+                InlineKeyboardButton("🟡", callback_data=f"set_traf:{c}:MEDIUM"),
+                InlineKeyboardButton("🔴", callback_data=f"set_traf:{c}:LOW"),
+            ])
+        keyboard.append([InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")])
+        
+        await update.message.reply_text("🚦 **Traffic Status Management**\n\nনিচ থেকে যেকোনো কান্ট্রির ট্রাফিক স্ট্যাটাস পরিবর্তন করুন:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
         
     else:
         if not update.message.document and user_id not in ADMIN_UPLOAD_STATE and user_id not in USER_SEARCH_STATE:
@@ -522,7 +653,7 @@ async def main():
     
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, otp_group_listener))
 
-    print("Zentrix Bot is running successfully...")
+    print("Zentrix Bot is running successfully with Traffic Panel...")
     
     async def main_runner():
         await application.initialize()
