@@ -107,7 +107,7 @@ async def build_main_menu(user_id: int):
 def back_keyboard():
     return ReplyKeyboardMarkup([[KeyboardButton("🔙 Back")]], resize_keyboard=True)
 
-# --- Admin Inline Panel Keyboard ---
+# --- Admin Main Control Panel Markup ---
 async def get_admin_panel_markup(user_id: int):
     total_users = await users_col.count_documents({})
     total_numbers = await numbers_col.count_documents({})
@@ -254,6 +254,22 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন।", show_alert=True)
 
+    # --- System Control Hub Menu (Second Image Option) ---
+    elif query.data == "adm_system_menu" and await is_admin(user_id):
+        await query.answer()
+        sys_text = "⚙️ **System Control Hub**\n\nনিচের অপশনগুলো থেকে ম্যানেজ করুন:"
+        sys_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("StexSMS Control", callback_data="sys_stex"), InlineKeyboardButton("Voltx Control", callback_data="sys_voltx")],
+            [InlineKeyboardButton("Zenex Control", callback_data="sys_zenex"), InlineKeyboardButton("YE SMS Control", callback_data="sys_ye")],
+            # যদি সিস্টেম মেনুর ভেতরে নতুন কোনো কন্ট্রোল বা অপশন যোগ করতে চান, তা নিচে এই ফরম্যাটে যোগ করতে পারেন:
+            # [InlineKeyboardButton("New System Control", callback_data="sys_new")],
+            [InlineKeyboardButton("🔙 Back", callback_data="adm_back")]
+        ])
+        await query.message.edit_text(sys_text, parse_mode="Markdown", reply_markup=sys_keyboard)
+
+    elif query.data.startswith("sys_") and await is_admin(user_id):
+        await query.answer("সিস্টেম মডিউল সক্রিয় আছে।", show_alert=True)
+
     # --- 1. Admin Management System ---
     elif query.data == "adm_mgmt_menu" and await is_admin(user_id):
         await query.answer()
@@ -297,7 +313,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await admins_col.delete_one({"user_id": rem_id})
         await query.answer(f"✅ Admin {rem_id} successfully removed!", show_alert=True)
         
-        # Reload management view
         admins = await admins_col.find({}).to_list(length=100)
         text = f"👑 **Admin Management System**\n\nPrimary Owner ID: `{OWNER_ID}`\n\n**Current Admins:**\n"
         for idx, adm in enumerate(admins, 1):
@@ -371,7 +386,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await channels_col.delete_one({"chat_id": chat_id_to_del})
         await query.answer("✅ Channel successfully deleted!", show_alert=True)
         
-        # Reload Force Join Panel
         fj_status = await get_setting("force_join_status", "ON")
         channels = await channels_col.find({}).to_list(length=50)
         text = f"📢 **Force Join System Control**\n\nSTATUS: `{fj_status}`\n\n**Managed Channels:**\n"
@@ -476,7 +490,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    # --- 5. X-Rony Control Panel (Advanced Settings) ---
+    # --- 5. X-Rony Control Panel ---
     elif query.data == "adm_xrony_menu" and await is_admin(user_id):
         await query.answer()
         wd_status = await get_setting("withdraw_global_status", "ON")
@@ -511,7 +525,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await set_setting("withdraw_global_status", new_val)
         await query.answer(f"Withdrawal status changed to {new_val}", show_alert=True)
         
-        # Refresh X-Rony Panel
         wd_status = new_val
         min_wd = await get_setting("min_withdraw", 100.0)
         ref_bonus = await get_setting("ref_bonus", 0.01)
@@ -581,7 +594,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ADMIN_SETTINGS_STATE[user_id] = {"setting": "rem_pay_method"}
         await query.message.edit_text("🗑️ যে পেমেন্ট মেথডটি ডিলিট করতে চান তার নাম লিখে পাঠান:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="xr_pay_methods")]]))
 
-    # Existing general admin buttons
     elif query.data == "adm_leaderboard" and await is_admin(user_id):
         await query.answer()
         cursor = users_col.find({}).sort("total_earned", -1).limit(10)
@@ -598,19 +610,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text += f"{emoji} {uname} — `💰 {earned:.2f}৳`\n"
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_back")]])
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-
-    elif query.data == "adm_system_menu" and await is_admin(user_id):
-        await query.answer()
-        sys_text = "⚙️ **System Control Hub**\n\nনিচের অপশনগুলো থেকে ম্যানেজ করুন:"
-        sys_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("StexSMS Control", callback_data="sys_stex"), InlineKeyboardButton("Voltx Control", callback_data="sys_voltx")],
-            [InlineKeyboardButton("Zenex Control", callback_data="sys_zenex"), InlineKeyboardButton("YE SMS Control", callback_data="sys_ye")],
-            [InlineKeyboardButton("🔙 Back", callback_data="adm_back")]
-        ])
-        await query.message.edit_text(sys_text, parse_mode="Markdown", reply_markup=sys_keyboard)
-
-    elif query.data.startswith("sys_") and await is_admin(user_id):
-        await query.answer("সিস্টেম মডিউল সক্রিয় আছে।", show_alert=True)
 
     elif query.data == "adm_upload" and await is_admin(user_id):
         await query.answer()
@@ -710,7 +709,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if balance < min_wd:
             await query.message.reply_text(
-                f"❌ দুঃখিত! উইথড্র করার জন্য আপনার অন্তত `{min_wd}৳` ব্যালেন্স থাকতে হবে।\n"
+                f"❌ দুঃখিত! উইথড্র করার জন্য আপনার অন্তত `{min_wd}৳` ব্যালেন্স থাকতে হবে。\n"
                 f"আপনার বর্তমান ব্যালেন্স: `{balance:.2f}৳`",
                 parse_mode="Markdown"
             )
@@ -1080,7 +1079,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- State Handlers for Admin Add ---
     if user_id == OWNER_ID and user_id in ADMIN_ADD_STATE:
         del ADMIN_ADD_STATE[user_id]
         target_val = text.strip()
@@ -1099,7 +1097,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ ইউজার খুঁজে পাওয়া যায়নি। সঠিক আইডি বা ইউজারনেম দিন।")
         return
 
-    # --- State Handlers for Channel Add ---
     if await is_admin(user_id) and user_id in CHANNEL_ADD_STATE:
         state = CHANNEL_ADD_STATE[user_id]
         step = state.get("step")
@@ -1126,7 +1123,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("✅ ফোর্স জয়েন চ্যানেল সফলভাবে যুক্ত করা হয়েছে!")
             return
 
-    # --- State Handlers for Forward Group Add ---
     if await is_admin(user_id) and user_id in FORWARD_GROUP_ADD_STATE:
         state = FORWARD_GROUP_ADD_STATE[user_id]
         step = state.get("step")
@@ -1137,7 +1133,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ ফরওয়ার্ড গ্রুপ `{gid}` সফলভাবে যুক্ত করা হয়েছে!")
             return
 
-    # --- State Handlers for User Management ---
     if await is_admin(user_id) and user_id in USER_MANAGE_STATE:
         action = USER_MANAGE_STATE[user_id].get("action")
         del USER_MANAGE_STATE[user_id]
@@ -1191,7 +1186,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ সঠিক সংখ্যা দিন।")
         return
 
-    # --- State Handlers for X-Rony & Admin Settings ---
     if await is_admin(user_id) and user_id in ADMIN_SETTINGS_STATE:
         setting_type = ADMIN_SETTINGS_STATE[user_id].get("setting")
         del ADMIN_SETTINGS_STATE[user_id]
@@ -1256,7 +1250,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ Payment method `{val}` removed successfully!")
             return
 
-    # Broadcast System Handler
     if await is_admin(user_id) and user_id in ADMIN_BROADCAST_STATE:
         del ADMIN_BROADCAST_STATE[user_id]
         broadcast_text = text.strip()
@@ -1534,7 +1527,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "🆘 SUPPORT":
         support_text = (
             f"🆘 **SUPPORT & HELP DESK**\n\n"
-            f"যেকোনো প্রয়োজনে সরাসরি আমাদের অফিসিয়াল অ্যাডমিনের সাথে যোগাযোগ করুন অথবা চ্যানেল ও গ্রুপে যুক্ত থাকুন।\n\n"
+            f"যেকোনো প্রয়োজনে সরাসরি আমাদের অফিসিয়াল অ্যাডমিনের সাথে যোগাযোগ করুন অথবা চ্যানেল ও গ্রুপে যুক্ত থাকুন。\n\n"
             f"👑 **Admin Support:** [Click Here to Message]({SUPPORT_URL})"
         )
         keyboard = [
