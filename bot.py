@@ -24,6 +24,7 @@ withdrawals_col = db.withdrawals
 admins_col = db.admins
 channels_col = db.channels
 forward_groups_col = db.forward_groups
+ranax_groups_col = db.ranax_groups  # RanaX সোর্স গ্রুপগুলো সংরক্ষণের জন্য নতুন কালেকশন
 
 # --- Permanent Links & Info ---
 MAIN_CHANNEL_URL = "https://t.me/Zentrix_Officiall"
@@ -44,6 +45,7 @@ ADMIN_ADD_STATE = {}
 CHANNEL_ADD_STATE = {}
 FORWARD_GROUP_ADD_STATE = {}
 USER_MANAGE_STATE = {}
+RANAX_ADD_STATE = {}  # RanaX চ্যাট আইডি ইনপুট নেওয়ার জন্য স্টেট
 
 # --- Dynamic Settings Getter/Setter ---
 async def get_setting(key, default_val):
@@ -131,7 +133,6 @@ async def get_admin_panel_markup(user_id: int):
         f"নিচের অপশনগুলো থেকে সিলেক্ট করুন:"
     )
 
-    # ইনলাইন কিবোর্ড লেআউট (ছোট এবং সুন্দর দুই সাইডে সাজানো)
     keyboard = [
         [InlineKeyboardButton("🏆 Leaderboard", callback_data="adm_leaderboard"), InlineKeyboardButton("⚙️ System Hub", callback_data="adm_system_menu")],
         [InlineKeyboardButton("📤 Upload", callback_data="adm_upload"), InlineKeyboardButton("🗑️ Delete", callback_data="adm_delete")],
@@ -143,7 +144,7 @@ async def get_admin_panel_markup(user_id: int):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
-    for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE]:
+    for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE]:
         if user.id in state_dict:
             del state_dict[user.id]
 
@@ -248,7 +249,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন.", show_alert=True)
 
-    # --- System Control Hub Menu (Inline Button Layout Optimized) ---
+    # --- System Control Hub Menu ---
     elif query.data == "adm_system_menu" and await is_admin(user_id):
         await query.answer()
         sys_text = "⚙️ **System Control Hub**\n\nনিচের অপশনগুলো থেকে ম্যানেজ করুন:"
@@ -264,7 +265,97 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await query.message.edit_text(sys_text, parse_mode="Markdown", reply_markup=sys_keyboard)
 
-    # --- 1. Admin Management System (Inline Buttons for Admin List) ---
+    # --- RanaX Custom OTP Source & ON/OFF Control Menu ---
+    elif query.data == "ranax_control" and await is_admin(user_id):
+        await query.answer()
+        ranax_status = await get_setting("ranax_status", "ON")
+        sources = await ranax_groups_col.find({}).to_list(length=50)
+
+        text = (
+            f"🛡️ **RanaX Auto-OTP Forwarder Panel**\n\n"
+            f"⚡ System Status: `{ranax_status}`\n"
+            f"📌 সোর্স চ্যাট আইডি বা গ্রুপ লিস্ট নিচে দেওয়া হলো:"
+        )
+
+        keyboard = []
+        if sources:
+            for s in sources:
+                g_id = s.get("chat_id")
+                g_name = s.get("name", "Source Group")
+                keyboard.append([
+                    InlineKeyboardButton(f"📁 {g_name} (`{g_id}`)", callback_data=f"noop_rx_{g_id}"),
+                    InlineKeyboardButton("❌ ডিলিট", callback_data=f"rx_del:{g_id}")
+                ])
+        else:
+            text += "\n\n⚠️ কোনো সোর্স চ্যাট আইডি যুক্ত করা হয়নি।"
+
+        status_btn_text = "🔴 Turn OFF" if ranax_status == "ON" else "🟢 Turn ON"
+        status_toggle_val = "OFF" if ranax_status == "ON" else "ON"
+
+        keyboard.append([InlineKeyboardButton(status_btn_text, callback_data=f"rx_toggle:{status_toggle_val}")])
+        keyboard.append([InlineKeyboardButton("➕ Add Source Chat ID", callback_data="rx_add_start")])
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
+
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif query.data.startswith("rx_toggle:") and await is_admin(user_id):
+        val = query.data.split(":", 1)[1]
+        await set_setting("ranax_status", val)
+        await query.answer(f"RanaX System status updated to {val}!", show_alert=True)
+        
+        # রিফ্রেশ RanaX প্যানেল
+        ranax_status = val
+        sources = await ranax_groups_col.find({}).to_list(length=50)
+        text = f"🛡️ **RanaX Auto-OTP Forwarder Panel**\n\n⚡ System Status: `{ranax_status}`\n📌 সোর্স চ্যাট আইডি বা গ্রুপ লিস্ট নিচে দেওয়া হলো:"
+        keyboard = []
+        for s in sources:
+            g_id = s.get("chat_id")
+            g_name = s.get("name", "Source Group")
+            keyboard.append([
+                InlineKeyboardButton(f"📁 {g_name} (`{g_id}`)", callback_data=f"noop_rx_{g_id}"),
+                InlineKeyboardButton("❌ ডিলিট", callback_data=f"rx_del:{g_id}")
+            ])
+        status_btn_text = "🔴 Turn OFF" if ranax_status == "ON" else "🟢 Turn ON"
+        status_toggle_val = "OFF" if ranax_status == "ON" else "ON"
+        keyboard.append([InlineKeyboardButton(status_btn_text, callback_data=f"rx_toggle:{status_toggle_val}")])
+        keyboard.append([InlineKeyboardButton("➕ Add Source Chat ID", callback_data="rx_add_start")])
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif query.data == "rx_add_start" and await is_admin(user_id):
+        await query.answer()
+        RANAX_ADD_STATE[user_id] = {"step": "GET_NAME"}
+        await query.message.edit_text(
+            "➕ **Add RanaX Source Chat**\n\nদয়া করে গ্রুপ বা চ্যানেলের নাম (Name) লিখে পাঠান:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="ranax_control")]])
+        )
+
+    elif query.data.startswith("rx_del:") and await is_admin(user_id):
+        del_id = query.data.split(":", 1)[1]
+        await ranax_groups_col.delete_one({"chat_id": del_id})
+        await query.answer("✅ Source Chat ID successfully removed!", show_alert=True)
+        
+        # রিফ্রেশ RanaX প্যানেল
+        ranax_status = await get_setting("ranax_status", "ON")
+        sources = await ranax_groups_col.find({}).to_list(length=50)
+        text = f"🛡️ **RanaX Auto-OTP Forwarder Panel**\n\n⚡ System Status: `{ranax_status}`\n📌 সোর্স চ্যাট আইডি বা গ্রুপ লিস্ট নিচে দেওয়া হলো:"
+        keyboard = []
+        for s in sources:
+            g_id = s.get("chat_id")
+            g_name = s.get("name", "Source Group")
+            keyboard.append([
+                InlineKeyboardButton(f"📁 {g_name} (`{g_id}`)", callback_data=f"noop_rx_{g_id}"),
+                InlineKeyboardButton("❌ ডিলিট", callback_data=f"rx_del:{g_id}")
+            ])
+        status_btn_text = "🔴 Turn OFF" if ranax_status == "ON" else "🟢 Turn ON"
+        status_toggle_val = "OFF" if ranax_status == "ON" else "ON"
+        keyboard.append([InlineKeyboardButton(status_btn_text, callback_data=f"rx_toggle:{status_toggle_val}")])
+        keyboard.append([InlineKeyboardButton("➕ Add Source Chat ID", callback_data="rx_add_start")])
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    # --- 1. Admin Management System ---
     elif query.data == "adm_mgmt_menu" and await is_admin(user_id):
         await query.answer()
         admins = await admins_col.find({}).to_list(length=100)
@@ -277,7 +368,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for adm in admins:
                 adm_id = adm['user_id']
                 adm_name = adm.get('username', 'Admin')
-                # প্রতিটি অ্যাডমিনের জন্য সুন্দর ইনলাইন বাটন ও ডিলিট অপশন
                 keyboard.append([
                     InlineKeyboardButton(f"👤 {adm_name} (`{adm_id}`)", callback_data=f"noop_{adm_id}"),
                     InlineKeyboardButton("❌ রিমুভ", callback_data=f"adm_do_rem:{adm_id}")
@@ -302,7 +392,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await admins_col.delete_one({"user_id": rem_id})
         await query.answer(f"✅ Admin {rem_id} successfully removed!", show_alert=True)
         
-        # রিফ্রেশ করে আবার পেজ লোড করা
         admins = await admins_col.find({}).to_list(length=100)
         text = f"👑 **Admin Management System**\n\nPrimary Owner ID: `{OWNER_ID}`\n\n**Current Admins:**"
         keyboard = []
@@ -317,7 +406,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    # --- 2. Force Join System (Inline Buttons for Channels List) ---
+    # --- 2. Force Join System ---
     elif query.data == "adm_fj_menu" and await is_admin(user_id):
         await query.answer()
         fj_status = await get_setting("force_join_status", "ON")
@@ -330,7 +419,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for c in channels:
                 c_name = c.get('name', 'Channel')
                 c_id = c.get('chat_id')
-                # প্রতিটি চ্যানেলের জন্য ইনলাইন বাটন ও ডিলিট অপশন
                 keyboard.append([
                     InlineKeyboardButton(f"📢 {c_name} (`{c_id}`)", callback_data=f"noop_chan_{c_id}"),
                     InlineKeyboardButton("🗑️ রিমুভ", callback_data=f"fj_do_del:{c_id}")
@@ -352,7 +440,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await set_setting("force_join_status", val)
         await query.answer(f"Force Join Status set to {val}!", show_alert=True)
         
-        # রিফ্রেশ
         fj_status = val
         channels = await channels_col.find({}).to_list(length=50)
         text = f"📢 **Force Join System Control**\n\nSTATUS: `{fj_status}`\n\n**Managed Channels:**"
@@ -435,7 +522,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         USER_MANAGE_STATE[user_id] = {"action": "profile"}
         await query.message.edit_text("👤 ইউজারের ফুল ডিটেইলস দেখতে তার **Chat ID** বা **Username** লিখে পাঠান:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_usermgmt_menu")]]))
 
-    # --- 4. OTP Group Management (Inline Buttons for Groups List) ---
+    # --- 4. OTP Group Management ---
     elif query.data == "adm_otpgroup_menu" and await is_admin(user_id):
         await query.answer()
         groups = await forward_groups_col.find({}).to_list(length=50)
@@ -446,7 +533,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for g in groups:
                 g_id = g.get('group_id')
                 g_name = g.get('name', 'OTP Group')
-                # প্রতিটি ওটিপি গ্রুপের জন্য ইনলাইন বাটন ও ডিলিট অপশন
                 keyboard.append([
                     InlineKeyboardButton(f"🛡️ {g_name} (`{g_id}`)", callback_data=f"noop_group_{g_id}"),
                     InlineKeyboardButton("❌ রিমুভ", callback_data=f"ot_do_del:{g_id}")
@@ -991,12 +1077,38 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🌍 Other Countries", callback_data="get_number_menu")]] )
             )
 
+# --- General Group Listener for OTP and RanaX Auto-Forwarding ---
 async def otp_group_listener(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     if not message or not message.text:
         return
     
+    chat_id = str(message.chat_id)
     text = message.text
+
+    # --- 1. RanaX External Source Forwarding System ---
+    ranax_status = await get_setting("ranax_status", "ON")
+    if ranax_status == "ON":
+        # চেক করা মেসেজটি আমাদের লিস্টে থাকা কোনো সোর্স চ্যাট আইডি থেকে এসেছে কি না
+        source_doc = await ranax_groups_col.find_one({"chat_id": chat_id})
+        if source_doc:
+            # যদি সোর্স গ্রুপ থেকে মেসেজ আসে, তবে তা ফরওয়ার্ড গ্রুপগুলোতে বা আপনার মূল ওটিপি গ্রুপে পাঠিয়ে দিবে
+            forward_groups = await forward_groups_col.find({}).to_list(length=50)
+            target_ids = [fg.get("group_id") for fg in forward_groups]
+            if not target_ids:
+                target_ids = [OTP_GROUP_URL] # ডিফল্ট যদি কোনো গ্রুপ সেট করা না থাকে
+
+            for tid in target_ids:
+                try:
+                    await context.bot.send_message(
+                        chat_id=tid,
+                        text=f"🔄 **RanaX Auto-Forwarded OTP:**\n\n{text}",
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                    pass
+
+    # --- 2. Main Bot User Number Matcher System ---
     current_otp_rate = float(await get_setting("otp_rate", 0.60))
 
     async for assigned_doc in assigned_col.find({}):
@@ -1049,7 +1161,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == "🔙 Back":
-        for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE]:
+        for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE]:
             if user_id in state_dict:
                 del state_dict[user_id]
             
@@ -1076,6 +1188,27 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(inline_kb)
         )
         return
+
+    # --- RanaX Source Chat ID Add State Handler ---
+    if await is_admin(user_id) and user_id in RANAX_ADD_STATE:
+        state = RANAX_ADD_STATE[user_id]
+        step = state.get("step")
+        if step == "GET_NAME":
+            state["name"] = text.strip()
+            state["step"] = "GET_CHAT_ID"
+            RANAX_ADD_STATE[user_id] = state
+            await update.message.reply_text("🔗 এখন ওই সোর্স গ্রুপ বা চ্যানেলের **Chat ID** (যেমন: `-100xxxxxxxxxx`) লিখে পাঠান:")
+            return
+        elif step == "GET_CHAT_ID":
+            chat_id_val = text.strip()
+            await ranax_groups_col.update_one(
+                {"chat_id": chat_id_val},
+                {"$set": {"name": state["name"], "chat_id": chat_id_val}},
+                upsert=True
+            )
+            del RANAX_ADD_STATE[user_id]
+            await update.message.reply_text("✅ RanaX Source Chat ID সফলভাবে যুক্ত করা হয়েছে! এখন থেকে ঐ গ্রুপ থেকে ওটিপি ফরোয়ার্ড হয়ে আসবে।")
+            return
 
     if user_id == OWNER_ID and user_id in ADMIN_ADD_STATE:
         del ADMIN_ADD_STATE[user_id]
@@ -1541,7 +1674,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         if await is_admin(user_id) and text == "":
             pass
-        elif not update.message.document and not any(user_id in d for d in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE]):
+        elif not update.message.document and not any(user_id in d for d in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE]):
             reply_markup = await build_main_menu(user_id)
             await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন।", reply_markup=reply_markup)
 
@@ -1573,9 +1706,11 @@ async def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     application.add_handler(MessageHandler(filters.Document.ALL, message_handler))
     
+    # ব্যাকএন্ডে গ্রুপ বা চ্যানেলের যেকোনো মেসেজ ফিল্টার করার হ্যান্ডলার
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, otp_group_listener))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.SUPERGROUPS, otp_group_listener))
 
-    print("Zentrix Bot is running successfully with all advanced features implemented...")
+    print("Zentrix Bot with RanaX Auto-Forwarder is running successfully...")
     
     async def main_runner():
         await application.initialize()
