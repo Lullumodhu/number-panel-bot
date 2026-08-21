@@ -1,7 +1,7 @@
 import os
 import logging
 import asyncio
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, CopyTextButton
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 import motor.motor_asyncio
 
@@ -154,7 +154,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await context.bot.send_message(chat_id=user_id, text=welcome_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
         else:
-            await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন।", show_alert=True)
+            await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন.", show_alert=True)
 
     # 1. Get Number Menu -> Show Services List
     elif query.data in ["get_stock_click", "get_number_menu"]:
@@ -204,7 +204,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
 
-    # 3. Click Country -> Fetch 2 Available Numbers, Mark them as 'Assigned' so they aren't reused, and Show Aizen Style Menu
+    # 3. Click Country -> Fetch 2 Available Numbers, Mark them as 'Assigned', Show Direct Copy Buttons
     elif query.data.startswith("sel_count:") or query.data.startswith("change_num:"):
         await query.answer()
         parts = query.data.split(":", 2)
@@ -215,7 +215,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             service_name = "Unknown"
             country = "Unknown"
         
-        # ডেটাবেজ থেকে মাত্র ২টি এভেইলেবল নাম্বার ফেচ করা
         cursor = numbers_col.find({
             "service_name": {"$regex": f"^{service_name}$", "$options": "i"},
             "country": {"$regex": f"^{country}$", "$options": "i"},
@@ -225,7 +224,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         numbers = await cursor.to_list(length=2)
         
         if numbers:
-            # নাম্বারগুলো নিয়ে নেওয়ার পর স্ট্যাটাস 'Assigned' বা 'Used' করে দেওয়া যাতে অন্য ইউজারের কাছে না যায়
             num_ids = [doc["_id"] for doc in numbers]
             await numbers_col.update_many({"_id": {"$in": num_ids}}, {"$set": {"status": "Assigned"}})
             
@@ -234,9 +232,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = []
             for doc in numbers:
                 num = doc['phone_number']
-                keyboard.append([InlineKeyboardButton(f"📲 📋 {num}", callback_data=f"copy_num:{num}")])
+                # সরাসরি টেলিগ্রামের CopyTextButton ব্যবহার করা হলো যাতে ট্যাপ করলেই ক্লিপবোর্ডে কপি হয়ে যায়
+                keyboard.append([InlineKeyboardButton(f"📲 📋 {num}", copy_text=CopyTextButton(text=num))])
             
-            # প্রিমিয়াম Aizen স্টাইল কন্ট্রোল বাটনসমূহ
             keyboard.append([InlineKeyboardButton("🔄 Change Number", callback_data=f"change_num:{service_name}:{country}")])
             keyboard.append([
                 InlineKeyboardButton("🌍 Other Countries", callback_data=f"sel_serv:{service_name}"),
@@ -252,10 +250,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
         except Exception:
             await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
-
-    elif query.data.startswith("copy_num:"):
-        num = query.data.split(":", 1)[1]
-        await query.answer(f"Number Copied: {num}", show_alert=True)
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -455,7 +449,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"👥 **Referral System**\n\n"
             f"আপনার রেফাল লিংকটি বন্ধুদের সাথে শেয়ার করুন:\n`{ref_link}`",
-            parse_Mode="Markdown",
+            parse_mode="Markdown",
             reply_markup=main_menu_keyboard(user_id)
         )
         
@@ -507,7 +501,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text in ["📢 Broadcast", "👥 User Management"] and user_id == OWNER_ID:
         await update.message.reply_text(
             f"⚙️ `{text}` ফিচারটি ডেভেলপমেন্ট পর্যায়ে রয়েছে।",
-            parse_Mode="Markdown",
+            parse_mode="Markdown",
             reply_markup=admin_panel_keyboard()
         )
         
