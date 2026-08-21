@@ -30,7 +30,7 @@ UPDATE_CHANNEL_URL = "https://t.me/Zentrix_Update"
 UPDATE_CHANNEL_ID = "@Zentrix_Update"
 
 OTP_GROUP_URL = "https://t.me/+pBpZWtQC4qswODI1"
-ADMIN_WITHDRAW_GROUP_ID = "-100mjyvnkkFvcQ5ODQ1" # অথবা আপনার গ্রুপের সংখ্যাসূচক চ্যাট আইডি (যেমন: -100xxxxxxxxxx)
+ADMIN_WITHDRAW_GROUP_ID = "-100mjyvnkkFvcQ5ODQ1"
 SUPPORT_URL = "https://t.me/ranaXvou"
 
 ADMIN_UPLOAD_STATE = {}
@@ -203,10 +203,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data = await users_col.find_one({"user_id": user_id})
         balance = user_data.get("balance", 0.0) if user_data else 0.0
         
-        # Minimum withdrawal check (1 Dollar / 1 Unit equivalent, change if needed e.g., 1.0)
-        if balance < 1.0:
+        # Minimum withdrawal check set to 100 Taka
+        if balance < 100.0:
             await query.message.reply_text(
-                f"❌ দুঃখিত! উইথড্র করার জন্য আপনার অন্তত `1.0৳ / $` ব্যালেন্স থাকতে হবে।\n"
+                f"❌ দুঃখিত! উইথড্র করার জন্য আপনার অন্তত `100.0৳` ব্যালেন্স থাকতে হবে।\n"
                 f"আপনার বর্তমান ব্যালেন্স: `{balance:.2f}৳`\n\n"
                 f"💡 আরও নাম্বার ভেরিফাই করে বা রেফার করে ব্যালেন্স বাড়ান!",
                 parse_mode="Markdown"
@@ -258,7 +258,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
         elif action == "no":
-            # Refund balance
             await users_col.update_one({"user_id": target_user_id}, {"$inc": {"balance": amount}})
             await query.message.edit_text(f"{query.message.text}\n\n❌ **Status: Cancelled & Refunded**", parse_mode="Markdown")
             try:
@@ -283,7 +282,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             account = data["account"]
             amount = data["amount"]
             
-            # Deduct balance
             await users_col.update_one({"user_id": user_id}, {"$inc": {"balance": -amount}})
             if user_id in USER_WITHDRAW_STATE:
                 del USER_WITHDRAW_STATE[user_id]
@@ -297,7 +295,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
             
-            # Send to admin group
             username_str = f"@{query.from_user.username}" if query.from_user.username else "No Username"
             admin_msg = (
                 f"🚨 **New Withdrawal Request!**\n\n"
@@ -315,7 +312,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
             try:
                 await context.bot.send_message(
-                    chat_id=OTP_GROUP_URL, # অথবা আপনার নির্দিষ্ট অ্যাডমিন গ্রুপ আইডি দিয়ে দিতে পারেন
+                    chat_id=OTP_GROUP_URL,
                     text=admin_msg,
                     parse_mode="Markdown",
                     reply_markup=admin_keyboard
@@ -613,7 +610,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state["step"] = "GET_AMOUNT"
             USER_WITHDRAW_STATE[user_id] = state
             await update.message.reply_text(
-                "💰 আপনি কত টাকা উইথড্র করতে চান সেই অ্যামাউন্ট লিখে পাঠান (যেমন: `1.5` বা `5`):",
+                "💰 আপনি কত টাকা উইথড্র করতে চান সেই অ্যামাউন্ট লিখে পাঠান (যেমন: `100` বা `500`):",
                 parse_mode="Markdown",
                 reply_markup=back_keyboard()
             )
@@ -631,8 +628,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if amount > balance:
                     await update.message.reply_text(f"❌ আপনার পর্যাপ্ত ব্যালেন্স নেই! আপনার বর্তমান ব্যালেন্স: `{balance:.2f}৳`", parse_mode="Markdown", reply_markup=back_keyboard())
                     return
-                if amount < 1.0:
-                    await update.message.reply_text("❌ সর্বনিম্ন ১ টাকা বা ডলার উইথড্র করতে হবে। সঠিক অ্যামাউন্ট দিন:", reply_markup=back_keyboard())
+                if amount < 100.0:
+                    await update.message.reply_text("❌ সর্বনিম্ন ১০০ টাকা উইথড্র করতে হবে। সঠিক অ্যামাউন্ট দিন:", reply_markup=back_keyboard())
                     return
                 
                 state["amount"] = amount
@@ -918,7 +915,7 @@ async def extra_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "set_ref_bonus_menu" and user_id == OWNER_ID:
         await query.answer()
         ADMIN_SETTINGS_STATE[user_id] = {"step": "SET_REF_BONUS"}
-        await query.message.reply_text("🎁 নতুন পার রেফার বোনাস (যেমন: `0.01` বা `0.05`) লিখে পাঠান:", parse_mode="Markdown", reply_markup=back_keyboard())
+        await query.message.reply_text("🎁 নতুন পার রেফার বোনাস (যেমন: `0.01` বা `0.05`) লিখে পাঠান:", parse_mode="Markdown", reply_markup=back_keyword())
 
 async def main():
     application = Application.builder().token(BOT_TOKEN).build()
