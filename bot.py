@@ -204,11 +204,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await context.bot.send_message(chat_id=user_id, text=welcome_text, parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
         else:
-            await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন।", show_alert=True)
+            await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন。", show_alert=True)
 
     # --- Admin Inline Panel Actions ---
     elif query.data == "adm_leaderboard" and user_id == OWNER_ID:
         await query.answer()
+        # Leaderboard: Ke koyta OTP niye aslo tar hisab (total_earned ba tar basis e top users)
         cursor = users_col.find({}).sort("total_earned", -1).limit(10)
         top_users = await cursor.to_list(length=10)
         
@@ -242,181 +243,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await query.message.edit_text(sys_text, parse_mode="Markdown", reply_markup=sys_keyboard)
 
-    # --- System Sub-Menu Handlers ---
-    elif query.data == "sys_stex" and user_id == OWNER_ID:
-        await query.answer()
-        stex_status = await get_setting("stex_status", "Active")
-        text = f"🔌 **StexSMS Control Center**\n\nস্ট্যাটাস: `{stex_status}`\nAPI কানেকশন এবং অটোমেশন সেটিংস আপডেট করুন:"
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🟢 Enable StexSMS", callback_data="set_stex:Active"), InlineKeyboardButton("🔴 Disable StexSMS", callback_data="set_stex:Off")],
-            [InlineKeyboardButton("🔙 Back to System", callback_data="adm_system_menu")]
-        ])
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-
-    elif query.data.startswith("set_stex:") and user_id == OWNER_ID:
-        val = query.data.split(":", 1)[1]
-        await set_setting("stex_status", val)
-        await query.answer(f"StexSMS status updated to {val}!", show_alert=True)
-        stex_status = val
-        text = f"🔌 **StexSMS Control Center**\n\nস্ট্যাটাস: `{stex_status}`\nAPI কানেকশন এবং অটোমেশন সেটিংস আপডেট করুন:"
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🟢 Enable StexSMS", callback_data="set_stex:Active"), InlineKeyboardButton("🔴 Disable StexSMS", callback_data="set_stex:Off")],
-            [InlineKeyboardButton("🔙 Back to System", callback_data="adm_system_menu")]
-        ])
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-
-    elif query.data == "sys_voltx" and user_id == OWNER_ID:
-        await query.answer()
-        voltx_status = await get_setting("voltx_status", "Active")
-        text = f"⚡ **Voltx Control Center**\n\nস্ট্যাটাস: `{voltx_status}`\nVoltx সার্ভিস ও রাউটিং নিয়ন্ত্রণ করুন:"
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🟢 Enable Voltx", callback_data="set_voltx:Active"), InlineKeyboardButton("🔴 Disable Voltx", callback_data="set_voltx:Off")],
-            [InlineKeyboardButton("🔙 Back to System", callback_data="adm_system_menu")]
-        ])
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-
-    elif query.data.startswith("set_voltx:") and user_id == OWNER_ID:
-        val = query.data.split(":", 1)[1]
-        await set_setting("voltx_status", val)
-        await query.answer(f"Voltx status updated to {val}!", show_alert=True)
-        text = f"⚡ **Voltx Control Center**\n\nস্ট্যাটাস: `{val}`\nVoltx সার্ভিস ও রাউটিং নিয়ন্ত্রণ করুন:"
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🟢 Enable Voltx", callback_data="set_voltx:Active"), InlineKeyboardButton("🔴 Disable Voltx", callback_data="set_voltx:Off")],
-            [InlineKeyboardButton("🔙 Back to System", callback_data="adm_system_menu")]
-        ])
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-
-    elif query.data == "sys_zenex" and user_id == OWNER_ID:
-        await query.answer()
-        zenex_status = await get_setting("zenex_status", "Active")
-        text = f"🌐 **Zenex Control Center**\n\nস্ট্যাটাস: `{zenex_status}`\nZenex গেটওয়ে মডিউল কন্ট্রোল করুন:"
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🟢 Enable Zenex", callback_data="set_zenex:Active"), InlineKeyboardButton("🔴 Disable Zenex", callback_data="set_zenex:Off")],
-            [InlineKeyboardButton("🔙 Back to System", callback_data="adm_system_menu")]
-        ])
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-
-    elif query.data.startswith("set_zenex:") and user_id == OWNER_ID:
-        val = query.data.split(":", 1)[1]
-        await set_setting("zenex_status", val)
-        await query.answer(f"Zenex status updated to {val}!", show_alert=True)
-        text = f"🌐 **Zenex Control Center**\n\nস্ট্যাটাস: `{val}`\nZenex গেটওয়ে মডিউল কন্ট্রোল করুন:"
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🟢 Enable Zenex", callback_data="set_zenex:Active"), InlineKeyboardButton("🔴 Disable Zenex", callback_data="set_zenex:Off")],
-            [InlineKeyboardButton("🔙 Back to System", callback_data="adm_system_menu")]
-        ])
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-
-    elif query.data == "sys_ye" and user_id == OWNER_ID:
-        await query.answer()
-        ye_status = await get_setting("ye_status", "Active")
-        text = f"📞 **YE SMS Control Center**\n\nস্ট্যাটাস: `{ye_status}`\nYE SMS গেটওয়ে কনফিগারেশন:"
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🟢 Enable YE SMS", callback_data="set_ye:Active"), InlineKeyboardButton("🔴 Disable YE SMS", callback_data="set_ye:Off")],
-            [InlineKeyboardButton("🔙 Back to System", callback_data="adm_system_menu")]
-        ])
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-
-    elif query.data.startswith("set_ye:") and user_id == OWNER_ID:
-        val = query.data.split(":", 1)[1]
-        await set_setting("ye_status", val)
-        await query.answer(f"YE SMS status updated to {val}!", show_alert=True)
-        text = f"📞 **YE SMS Control Center**\n\nস্ট্যাটাস: `{val}`\nYE SMS গেটওয়ে কনফিগারেশন:"
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🟢 Enable YE SMS", callback_data="set_ye:Active"), InlineKeyboardButton("🔴 Disable YE SMS", callback_data="set_ye:Off")],
-            [InlineKeyboardButton("🔙 Back to System", callback_data="adm_system_menu")]
-        ])
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-
-    elif query.data == "sys_forcejoin" and user_id == OWNER_ID:
-        await query.answer()
-        fj_status = await get_setting("force_join_status", "ON")
-        text = (
-            f"📢 **Force Join System Control**\n\n"
-            f"বর্তমান স্ট্যাটাস: `{fj_status}`\n"
-            f"চ্যানেল ও গ্রুপ জয়েন বাধ্যতামূলক করার ফিচারটি অন/অফ করুন:"
-        )
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🟢 Turn ON Force Join", callback_data="set_fj:ON"), InlineKeyboardButton("🔴 Turn OFF Force Join", callback_data="set_fj:OFF")],
-            [InlineKeyboardButton("🔙 Back to System", callback_data="adm_system_menu")]
-        ])
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-
-    elif query.data.startswith("set_fj:") and user_id == OWNER_ID:
-        val = query.data.split(":", 1)[1]
-        await set_setting("force_join_status", val)
-        await query.answer(f"Force Join status set to {val}!", show_alert=True)
-        text = (
-            f"📢 **Force Join System Control**\n\n"
-            f"বর্তমান স্ট্যাটাস: `{val}`\n"
-            f"চ্যানেল ও গ্রুপ জয়েন বাধ্যতামূলক করার ফিচারটি অন/অফ করুন:"
-        )
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🟢 Turn ON Force Join", callback_data="set_fj:ON"), InlineKeyboardButton("🔴 Turn OFF Force Join", callback_data="set_fj:OFF")],
-            [InlineKeyboardButton("🔙 Back to System", callback_data="adm_system_menu")]
-        ])
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-
-    elif query.data == "sys_admin_mgmt" and user_id == OWNER_ID:
-        await query.answer()
-        text = (
-            f"👑 **Admin Management**\n\n"
-            f"Current Owner ID: `{OWNER_ID}`\n"
-            f"অ্যাডমিন তালিকা দেখতে বা নতুন অ্যাডমিন যুক্ত করতে নিচের অপশন ব্যবহার করুন:"
-        )
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📋 View Admin List", callback_data="sub_view_admin")],
-            [InlineKeyboardButton("🔙 Back to System", callback_data="adm_system_menu")]
-        ])
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-
-    elif query.data == "sub_view_admin" and user_id == OWNER_ID:
-        await query.answer()
-        text = f"👑 **Admin List:**\n\n1. Main Owner ID: `{OWNER_ID}` (Full Access)"
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="sys_admin_mgmt")]])
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-
-    elif query.data == "sys_otpgroup" and user_id == OWNER_ID:
-        await query.answer()
-        text = (
-            f"💬 **OTP Group Configuration**\n\n"
-            f"Current OTP Group URL/ID:\n`{OTP_GROUP_URL}`\n\n"
-            f"গ্রুপ পরিবর্তন বা আপডেট করার জন্য বট কনফিগারেশন চেক করুন।"
-        )
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to System", callback_data="adm_system_menu")]])
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-
-    elif query.data == "sys_usermgmt" and user_id == OWNER_ID:
-        await query.answer()
-        total_u = await users_col.count_documents({})
-        text = (
-            f"👥 **User Management Hub**\n\n"
-            f"Total Registered Users: `{total_u}`\n"
-            f"ইউজার ব্যালেন্স চেক বা ম্যানেজ করার ফিচার এখানে রয়েছে।"
-        )
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to System", callback_data="adm_system_menu")]])
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-
-    elif query.data == "sys_ranax" and user_id == OWNER_ID:
-        await query.answer()
-        text = f"🚀 **RanaX Core Control**\n\nকাস্টম সিস্টেম প্রোটোকল এবং স্পেশাল কনফিগারেশন সক্রিয় আছে।"
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to System", callback_data="adm_system_menu")]])
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-
-    elif query.data == "sys_emoji" and user_id == OWNER_ID:
-        await query.answer()
-        text = f"✨ **Premium Emoji Configuration**\n\nবট মেনু এবং বাটনের প্রিমিয়াম ইমোজি স্টাইল ম্যানেজমেন্ট।"
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to System", callback_data="adm_system_menu")]])
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-
-    elif query.data == "sys_menudesign" and user_id == OWNER_ID:
-        await query.answer()
-        text = f"📱 **Menu Design Hub**\n\nইনলাইন এবং রিপ্লাই মেনুর লেআউট ও ডিজাইন স্টাইল।"
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to System", callback_data="adm_system_menu")]])
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-
-    elif query.data == "sys_test" and user_id == OWNER_ID:
-        await query.answer("টেস্ট সফল হয়েছে! সিস্টেম সম্পূর্ণ ঠিকঠাক কাজ করছে।", show_alert=True)
+    elif query.data.startswith("sys_") and user_id == OWNER_ID:
+        await query.answer("এই মডিউলটির কাজ পরবর্তীতে যুক্ত করা হবে।", show_alert=True)
 
     elif query.data == "adm_upload" and user_id == OWNER_ID:
         await query.answer()
@@ -480,6 +308,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data == "adm_used" and user_id == OWNER_ID:
         await query.answer()
+        # Used numbers সুন্দর ডিটেইলস লিস্ট বা সামারি
         used_cursor = numbers_col.find({"status": "Used"}).limit(20)
         used_list = await used_cursor.to_list(length=20)
         total_used = await numbers_col.count_documents({"status": "Used"})
@@ -496,6 +325,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data == "adm_unused" and user_id == OWNER_ID:
         await query.answer()
+        # Unused numbers সার্ভিস অনুযায়ী সামারি
         pipeline = [{"$match": {"status": "Available"}}, {"$group": {"_id": {"service": "$service_name", "country": "$country"}, "count": {"$sum": 1}}}]
         cursor = numbers_col.aggregate(pipeline)
         unused_groups = await cursor.to_list(length=50)
@@ -697,6 +527,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         services = await numbers_col.distinct("service_name", {"status": "Available"})
         
         if services:
+            # ব্যাক বাটন সহ সার্ভিস লিস্ট এবং সুন্দর স্টাইলিশ ডিজাইন
             keyboard = [[InlineKeyboardButton(f"📱 𝙁𝙖𝙘𝙚𝙗𝙤𝙤𝙠" if s.lower()=="facebook" else (f"💬 𝙄𝙢𝙤" if s.lower()=="imo" else (f"📞 𝙒𝙝𝙖𝙩𝙨𝘼𝙥𝙥" if s.lower()=="whatsapp" else f"📱 {s}")), callback_data=f"sel_serv:{s}")] for s in services]
             keyboard.append([InlineKeyboardButton("🔙 𝘽𝙖𝙘𝙠 𝙩𝙤 𝙈𝙚𝙣𝙪", callback_data="back_to_main_menu")])
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -922,7 +753,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Broadcast System Handler
+    # Broadcast System Handler (Admin typing broadcast message)
     if user_id == OWNER_ID and user_id in ADMIN_BROADCAST_STATE:
         del ADMIN_BROADCAST_STATE[user_id]
         broadcast_text = text.strip()
@@ -1081,6 +912,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             del ADMIN_UPLOAD_STATE[user_id]
             
+            # নাম্বার আপলোড করার সাথে সাথে সকল ইউজারের কাছে নোটিফিকেশন ব্রডকাস্ট করা
             asyncio.create_task(broadcast_new_numbers_alert(context, service_name, len(numbers_list)))
             
             success_text = (
@@ -1122,6 +954,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             del ADMIN_UPLOAD_STATE[user_id]
             
+            # ফাইল থেকে নাম্বার আপলোড করার সাথে সাথে সকল ইউজারের কাছে অ্যালার্ট পাঠানো
             asyncio.create_task(broadcast_new_numbers_alert(context, service_name, len(numbers_list)))
             
             success_text = (
@@ -1218,6 +1051,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif not update.message.document and not any(user_id in d for d in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE]):
             await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন।", reply_markup=main_menu_keyboard(user_id))
 
+# নতুন নাম্বার অ্যাড হওয়ার সাথে সাথে সকল ইউজারের কাছে এলার্ম পাঠানোর ব্যাকগ্রাউন্ড টাস্ক
 async def broadcast_new_numbers_alert(context: ContextTypes.DEFAULT_TYPE, service_name: str, count: int):
     alert_text = (
         f"🚨 **New Numbers Added!** 🚨\n\n"
@@ -1248,7 +1082,7 @@ async def main():
     
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, otp_group_listener))
 
-    print("Zentrix Bot is running successfully with all System sub-buttons functional...")
+    print("Zentrix Bot is running successfully with Upload, Broadcast & Leaderboard features optimized...")
     
     async def main_runner():
         await application.initialize()
