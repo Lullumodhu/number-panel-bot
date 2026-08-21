@@ -203,7 +203,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data = await users_col.find_one({"user_id": user_id})
         balance = user_data.get("balance", 0.0) if user_data else 0.0
         
-        # Minimum withdrawal check set to 100 Taka
         if balance < 100.0:
             await query.message.reply_text(
                 f"❌ দুঃখিত! উইথড্র করার জন্য আপনার অন্তত `100.0৳` ব্যালেন্স থাকতে হবে।\n"
@@ -915,7 +914,7 @@ async def extra_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "set_ref_bonus_menu" and user_id == OWNER_ID:
         await query.answer()
         ADMIN_SETTINGS_STATE[user_id] = {"step": "SET_REF_BONUS"}
-        await query.message.reply_text("🎁 নতুন পার রেফার বোনাস (যেমন: `0.01` বা `0.05`) লিখে পাঠান:", parse_mode="Markdown", reply_markup=back_keyword())
+        await query.message.reply_text("🎁 নতুন পার রেফার বোনাস (যেমন: `0.01` বা `0.05`) লিখে পাঠান:", parse_mode="Markdown", reply_markup=back_keyboard())
 
 async def main():
     application = Application.builder().token(BOT_TOKEN).build()
