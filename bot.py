@@ -78,7 +78,6 @@ def back_keyboard():
 
 # --- Admin Inline Panel Keyboard ---
 async def get_admin_panel_markup():
-    # Fetch overview stats dynamically
     total_users = await users_col.count_documents({})
     total_numbers = await numbers_col.count_documents({})
     available_numbers = await numbers_col.count_documents({"status": "Available"})
@@ -103,6 +102,7 @@ async def get_admin_panel_markup():
 
     keyboard = [
         [InlineKeyboardButton("🏆 Leaderboard System", callback_data="adm_leaderboard")],
+        [InlineKeyboardButton("⚙️ System", callback_data="adm_system_menu")],
         [InlineKeyboardButton("📤 Upload Number", callback_data="adm_upload"), InlineKeyboardButton("🗑️ Delete Files", callback_data="adm_delete")],
         [InlineKeyboardButton("📢 Broadcast System", callback_data="adm_broadcast")],
         [InlineKeyboardButton("📱 Used Numbers", callback_data="adm_used"), InlineKeyboardButton("📲 Unused Numbers", callback_data="adm_unused")],
@@ -209,8 +209,25 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "adm_leaderboard" and user_id == OWNER_ID:
         await query.answer()
         text = "🏆 **Leaderboard System**\n\n(এই ফিচারটির কার্যকারিতা শীঘ্রই যুক্ত করা হবে।)"
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="adm_back")]])
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_back")]])
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+
+    elif query.data == "adm_system_menu" and user_id == OWNER_ID:
+        await query.answer()
+        sys_text = "⚙️ **System Control Hub**\n\nনিচের অপশনগুলো থেকে ম্যানেজ করুন:"
+        sys_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("StexSMS Control", callback_data="sys_stex"), InlineKeyboardButton("Voltx Control", callback_data="sys_voltx")],
+            [InlineKeyboardButton("Zenex Control", callback_data="sys_zenex"), InlineKeyboardButton("YE SMS Control", callback_data="sys_ye")],
+            [InlineKeyboardButton("Force Join System", callback_data="sys_forcejoin"), InlineKeyboardButton("Admin Management", callback_data="sys_admin_mgmt")],
+            [InlineKeyboardButton("OTP Group", callback_data="sys_otpgroup"), InlineKeyboardButton("User Management", callback_data="sys_usermgmt")],
+            [InlineKeyboardButton("RanaX Control", callback_data="sys_ranax"), InlineKeyboardButton("Premium Emoji", callback_data="sys_emoji")],
+            [InlineKeyboardButton("Menu Design", callback_data="sys_menudesign"), InlineKeyboardButton("Test", callback_data="sys_test")],
+            [InlineKeyboardButton("🔙 Back", callback_data="adm_back")]
+        ])
+        await query.message.edit_text(sys_text, parse_mode="Markdown", reply_markup=sys_keyboard)
+
+    elif query.data.startswith("sys_") and user_id == OWNER_ID:
+        await query.answer("এই মডিউলটির কাজ পরবর্তীতে যুক্ত করা হবে।", show_alert=True)
 
     elif query.data == "adm_upload" and user_id == OWNER_ID:
         await query.answer()
@@ -220,27 +237,27 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "adm_delete" and user_id == OWNER_ID:
         await query.answer()
         text = "🗑️ **Delete Files / Numbers**\n\n(এই অপশনের কাজ পরবর্তীতে সেটআপ করে দেওয়া হবে।)"
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="adm_back")]])
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_back")]])
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
     elif query.data == "adm_broadcast" and user_id == OWNER_ID:
         await query.answer()
         text = "📢 **Broadcast System**\n\n(ব্রডকাস্ট সিস্টেমের কাজ পরবর্তীতে সেটআপ করা হবে।)"
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="adm_back")]])
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_back")]])
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
     elif query.data == "adm_used" and user_id == OWNER_ID:
         await query.answer()
         count = await numbers_col.count_documents({"status": "Used"})
         text = f"📱 **Used Numbers Summary**\n\nমোট ব্যবহৃত (Used) নাম্বারের সংখ্যা: `{count}`"
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="adm_back")]])
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_back")]])
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
     elif query.data == "adm_unused" and user_id == OWNER_ID:
         await query.answer()
         count = await numbers_col.count_documents({"status": "Available"})
         text = f"📲 **Unused/Available Numbers Summary**\n\nমোট অব্যবহৃত (Unused/Available) নাম্বারের সংখ্যা: `{count}`"
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="adm_back")]])
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_back")]])
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
     elif query.data == "adm_close" and user_id == OWNER_ID:
@@ -572,7 +589,6 @@ async def otp_group_listener(update: Update, context: ContextTypes.DEFAULT_TYPE)
             user_id = assigned_doc["user_id"]
             service = assigned_doc["service_name"]
             
-            # Mark number as Used when OTP arrives
             await numbers_col.update_one({"phone_number": phone}, {"$set": {"status": "Used"}})
             
             await users_col.update_one(
@@ -633,7 +649,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Withdraw State Handling
     if user_id in USER_WITHDRAW_STATE:
         state = USER_WITHDRAW_STATE[user_id]
         step = state.get("step")
@@ -894,7 +909,7 @@ async def main():
     
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, otp_group_listener))
 
-    print("Zentrix Bot is running successfully with Updated Admin Panel...")
+    print("Zentrix Bot is running successfully with System Menu added...")
     
     async def main_runner():
         await application.initialize()
