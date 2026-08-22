@@ -321,9 +321,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await query.answer(f"❌ গ্রুপে মেসেজ পাঠাতে সমস্যা হয়েছে: {str(e)}", show_alert=True)
 
-        delete tp state
-        if user_id in TEST_FLOW_STATE:
-            del TEST_FLOW_STATE[user_id]
+            # delete tp state
+    if user_id in TEST_FLOW_STATE:
+        del TEST_FLOW_STATE[user_id]
+        
 
         # ব্যাক টু সিস্টেম হাব
         sys_text = "⚙️ **System Control Hub**\n\nনিচের অপশনগুলো থেকে ম্যানেজ করুন:"
