@@ -410,12 +410,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await query.message.edit_text(sys_text, parse_mode="Markdown", reply_markup=sys_keyboard)
 
-    # --- Admin OTP Group Wizard ---
-    elif query.data == "" and await is_admin(user_id):
+    # --- Admin OTP Group Test Wizard ---
+    elif query.data == "test" and await is_admin(user_id):
         await query.answer()
-        STATE[user_id] = {"step": "GET_SERVICE"}
+        TEST_STATE[user_id] = {"step": "GET_SERVICE"}
         await query.message.edit_text(
-            "🧪 **OTP Group **\n\n"
+            "🧪 **OTP Group Test**\n\n"
             "প্রথমে যে **Service** টেস্ট করতে চান তার নাম লিখুন।\n"
             "উদাহরণ: `Facebook` / `WhatsApp`",
             parse_mode="Markdown",
@@ -1378,7 +1378,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == "🔙 Back":
-        for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, STATE]:
+        for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_STATE]:
             if user_id in state_dict:
                 del state_dict[user_id]
             
@@ -1406,10 +1406,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- Admin OTP Group State Handler ---
-    if await is_admin(user_id) and user_id in 
-    STATE:
-        state = STATE[user_id]
+    # --- Admin OTP Group Test State Handler ---
+    if await is_admin(user_id) and user_id in TEST_STATE:
+        state = TEST_STATE[user_id]
         step = state.get("step")
 
         if step == "GET_SERVICE":
@@ -1422,7 +1421,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             state["service"] = service
             state["step"] = "GET_NUMBER"
-            STATE[user_id] = state
+            TEST_STATE[user_id] = state
             await update.message.reply_text(
                 "📞 এবার **Phone Number** লিখুন।\n\n"
                 "উদাহরণ: `+601862810138`",
@@ -1445,7 +1444,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             state["phone"] = normalized
             state["step"] = "GET_COUNTRY"
-            STATE[user_id] = state
+            TEST_STATE[user_id] = state
             await update.message.reply_text(
                 "🌍 এবার **Country Short Code** লিখুন।\n\n"
                 "শুধু 2টি অক্ষর দিন — যেমন: `MY`, `BD`, `ID`, `FR`, `US`\n"
@@ -1468,7 +1467,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             state["country"] = country
             state["step"] = "GET_OTP"
-            STATE[user_id] = state
+            TEST_STATE[user_id] = state
             await update.message.reply_text(
                 f"🌍 Country: `{country}`\n\n"
                 "🔐 এবার **OTP Code** লিখুন।\n"
@@ -1491,7 +1490,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             state["otp"] = otp
             state["step"] = "GET_LANGUAGE"
-            STATE[user_id] = state
+            TEST_STATE[user_id] = state
             await update.message.reply_text(
                 "🌐 এবার **Language Code** লিখুন।\n\n"
                 "শুধু 2টি অক্ষর দিন, যেমন: `EN`, `FR`, `ID`",
@@ -1515,29 +1514,29 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             phone = state["phone"]
             otp = state["otp"]
             country = state["country"]
-            del STATE[user_id]
+            del TEST_STATE[user_id]
 
             processing = await update.message.reply_text(
-                "⏳ OTP configured OTP group-এ পাঠানো হচ্ছে..."
+                "⏳ Test OTP configured OTP group-এ পাঠানো হচ্ছে..."
             )
 
-            success, failed, total = await send_otp_to_configured_groups(
+            success, failed, total = await send_test_otp_to_configured_groups(
                 context, service, phone, otp, language, country
             )
 
-            # Show the exact same rendering in the admin chat as well.
+            # Show the exact same test rendering in the admin chat as well.
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=build_otp_text(service, phone, otp, language, country),
+                    text=build_test_otp_text(service, phone, otp, language, country),
                     parse_mode="Markdown",
-                    reply_markup=await build_otp_keyboard(context, otp)
+                    reply_markup=await build_test_otp_keyboard(context, otp)
                 )
             except Exception:
                 pass
 
             result_text = (
-                "🧪 **OTP Group Complete**\n\n"
+                "🧪 **OTP Group Test Complete**\n\n"
                 f"📱 Service: `{service}`\n"
                 f"📞 Number: `{phone}`\n"
                 f"🌍 Country: `{country}`\n"
