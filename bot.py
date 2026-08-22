@@ -1,9 +1,18 @@
 import os
 import logging
 import asyncio
+import re
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, CopyTextButton
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 import motor.motor_asyncio
+
+# Optional country detection. If unavailable, a calling-code fallback is used.
+try:
+    import phonenumbers
+    from phonenumbers import geocoder
+except ImportError:
+    phonenumbers = None
+    geocoder = None
 
 # Logging setup
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -47,7 +56,7 @@ FORWARD_GROUP_ADD_STATE = {}
 USER_MANAGE_STATE = {}
 RANAX_ADD_STATE = {}
 MENU_EDIT_STATE = {}  # মেনু টেক্সট বা বাটন কাস্টমাইজেশনের জন্য স্টেট
-TEST_FLOW_STATE = {}  # টেস্ট ফ্লো ডেটা সংরক্ষণের জন্য স্টেট
+TEST_STATE = {}  # Admin-only OTP Group Test wizard
 
 # --- Dynamic Settings Getter/Setter ---
 async def get_setting(key, default_val):
@@ -95,6 +104,7 @@ async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # --- Reply Keyboards (Normal Users - Dynamic Support) ---
 async def main_menu_keyboard(user_id: int):
+    # ডায়নামিক নামগুলো ডাটাবেজ থেকে লোড করা হচ্ছে, না থাকলে ডিফল্ট নাম ব্যবহার হবে
     btn_get_num = await get_setting("btn_get_number", "📱 GET NUMBER")
     btn_search_num = await get_setting("btn_search_number", "🔎 SEARCH NUMBER")
     btn_traffic = await get_setting("btn_traffic", "🚦 TRAFFIC")
@@ -149,64 +159,11 @@ async def get_admin_panel_markup(user_id: int):
     ]
     return panel_text, InlineKeyboardMarkup(keyboard)
 
-# --- OTP/Test Helpers ---
-COUNTRY_ISO_BY_PREFIX = {
-    "880": "BD", "60": "MY", "62": "ID", "33": "FR", "44": "GB",
-    "1": "US", "7": "RU", "81": "JP", "82": "KR", "86": "CN",
-    "91": "IN", "92": "PK", "93": "AF", "94": "LK", "95": "MM",
-    "98": "IR", "20": "EG", "27": "ZA", "30": "GR", "31": "NL",
-    "32": "BE", "34": "ES", "39": "IT", "40": "RO", "41": "CH",
-    "43": "AT", "45": "DK", "46": "SE", "47": "NO", "48": "PL",
-    "49": "DE", "51": "PE", "52": "MX", "53": "CU", "54": "AR",
-    "55": "BR", "56": "CL", "57": "CO", "58": "VE", "63": "PH",
-    "64": "NZ", "65": "SG", "66": "TH", "84": "VN", "90": "TR",
-    "212": "MA", "213": "DZ", "216": "TN", "218": "LY", "234": "NG",
-    "254": "KE", "255": "TZ", "256": "UG", "971": "AE", "972": "IL",
-    "973": "BH", "974": "QA", "966": "SA", "968": "OM", "965": "KW",
-}
-
-
-def normalize_phone(phone: str) -> str:
-    return ''.join(ch for ch in str(phone) if ch.isdigit() or ch == '+')
-
-
-def detect_country_iso(phone: str) -> str:
-    clean = normalize_phone(phone).lstrip('+')
-    # Longest prefix first so 971/972 etc. are checked before shorter prefixes.
-    for prefix in sorted(COUNTRY_ISO_BY_PREFIX, key=len, reverse=True):
-        if clean.startswith(prefix):
-            return COUNTRY_ISO_BY_PREFIX[prefix]
-    return "UN"
-
-
-def build_otp_display(service: str, phone: str, otp_text: str, language: str, country_iso: str, test=False, rate=None) -> str:
-    """Single display format used by real OTP notifications and Test Flow."""
-    title = "🧪 **[TEST OTP - OTP HUB]**" if test else "📥 **OTP Received!**"
-    body = (
-        f"💬 #OTP_Received `{phone}`\n"
-        f"{title}\n\n"
-        f"📱 **Service:** `{service}`\n"
-        f"💬 `{otp_text}`\n"
-        f"🌍 **Country:** `{country_iso}`\n"
-        f"🌐 **Language:** `{language}`"
-    )
-    if rate is not None and not test:
-        body += f"\n\n💵 Added to Balance: `+{rate}৳`"
-    if test:
-        body += "\n\n✅ _Test only — no balance/reward was added._"
-    return body
-
-
-async def get_otp_target_groups():
-    groups = await forward_groups_col.find({}).to_list(length=50)
-    ids = [g.get("group_id") for g in groups if g.get("group_id")]
-    return ids or [OTP_GROUP_URL]
-
 # --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
-    for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_FLOW_STATE]:
+    for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_STATE]:
         if user.id in state_dict:
             del state_dict[user.id]
 
@@ -291,6 +248,81 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = await build_main_menu(user.id)
     await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=reply_markup)
 
+
+# --- Admin OTP Group Test Helpers ---
+FALLBACK_COUNTRY_CODES = {
+    "880": "BD", "60": "MY", "62": "ID", "65": "SG", "66": "TH",
+    "84": "VN", "63": "PH", "91": "IN", "92": "PK", "93": "AF",
+    "94": "LK", "95": "MM", "98": "IR", "81": "JP", "82": "KR",
+    "86": "CN", "7": "RU", "90": "TR", "1": "US/CA", "44": "GB",
+    "33": "FR", "49": "DE", "39": "IT", "34": "ES", "31": "NL",
+    "32": "BE", "41": "CH", "43": "AT", "45": "DK", "46": "SE",
+    "47": "NO", "48": "PL", "30": "GR", "351": "PT", "353": "IE",
+    "358": "FI", "380": "UA", "420": "CZ", "36": "HU", "40": "RO",
+    "972": "IL", "971": "AE", "966": "SA", "974": "QA", "973": "BH",
+    "965": "KW", "968": "OM", "967": "YE", "962": "JO", "961": "LB",
+    "963": "SY", "964": "IQ", "20": "EG", "212": "MA", "213": "DZ",
+    "216": "TN", "218": "LY", "234": "NG", "254": "KE", "255": "TZ",
+    "256": "UG", "27": "ZA", "61": "AU", "64": "NZ",
+}
+
+def detect_test_country(phone: str) -> str:
+    raw = re.sub(r"[^\d+]", "", phone.strip())
+    if not raw.startswith("+"):
+        raw = "+" + raw
+
+    if phonenumbers is not None:
+        try:
+            parsed = phonenumbers.parse(raw, None)
+            region = geocoder.region_code_for_number(parsed)
+            if region:
+                return region.upper()
+        except Exception:
+            pass
+
+    digits = raw.lstrip("+")
+    for length in (3, 2, 1):
+        prefix = digits[:length]
+        if prefix in FALLBACK_COUNTRY_CODES:
+            return FALLBACK_COUNTRY_CODES[prefix]
+    return "UN"
+
+def build_test_otp_text(service: str, phone: str, otp: str, language: str, country: str) -> str:
+    return (
+        "🧪 **TEST OTP**\n\n"
+        f"📱 **Service:** `{service}`\n"
+        f"📞 **Number:** `{phone}`\n"
+        f"🌍 **Country:** `{country}`\n"
+        f"🔐 **OTP:** `{otp}`\n"
+        f"🌐 **Language:** `{language}`"
+    )
+
+async def send_test_otp_to_configured_groups(context: ContextTypes.DEFAULT_TYPE,
+                                             service: str, phone: str,
+                                             otp: str, language: str,
+                                             country: str):
+    groups = await forward_groups_col.find({}).to_list(length=50)
+    target_ids = [str(g.get("group_id")).strip() for g in groups if g.get("group_id")]
+    if not target_ids:
+        target_ids = [OTP_GROUP_URL]
+
+    payload = build_test_otp_text(service, phone, otp, language, country)
+    success = 0
+    failed = 0
+
+    for target_id in target_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text=payload,
+                parse_mode="Markdown"
+            )
+            success += 1
+        except Exception:
+            failed += 1
+
+    return success, failed, len(target_ids)
+
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
@@ -329,7 +361,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("StexSMS", callback_data="stex_control"), InlineKeyboardButton("Voltx", callback_data="voltx_control")],
             [InlineKeyboardButton("Zenex", callback_data="zenex_control"), InlineKeyboardButton("YE SMS", callback_data="ye_control")],
             [InlineKeyboardButton("RanaX", callback_data="ranax_control"), InlineKeyboardButton("Emoji", callback_data="premium_emoji")],
-            [InlineKeyboardButton("Menu Design", callback_data="menu_design"), InlineKeyboardButton("Test", callback_data="test_flow_start")],
+            [InlineKeyboardButton("Menu Design", callback_data="menu_design"), InlineKeyboardButton("Test", callback_data="test")],
             [InlineKeyboardButton("👑 Admin Mgmt", callback_data="adm_mgmt_menu"), InlineKeyboardButton("⚙️ Force Join", callback_data="adm_fj_menu")],
             [InlineKeyboardButton("👥 User Mgmt", callback_data="adm_usermgmt_menu"), InlineKeyboardButton("💬 OTP Groups", callback_data="adm_otpgroup_menu")],
             [InlineKeyboardButton("🚀 X-Rony Panel", callback_data="adm_xrony_menu")],
@@ -337,70 +369,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await query.message.edit_text(sys_text, parse_mode="Markdown", reply_markup=sys_keyboard)
 
-    # --- Test Flow Handler Start ---
-    elif query.data == "test_flow_start" and await is_admin(user_id):
+    # --- Admin OTP Group Test Wizard ---
+    elif query.data == "test" and await is_admin(user_id):
         await query.answer()
-        TEST_FLOW_STATE[user_id] = {"step": "WAITING_FOR_SERVICE"}
+        TEST_STATE[user_id] = {"step": "GET_SERVICE"}
         await query.message.edit_text(
-            "🧪 **Test Flow (GET_SERVICE)**\n\nদয়া করে টেস্ট করার জন্য সার্ভিসের নামটি লিখে পাঠান:",
+            "🧪 **OTP Group Test**\n\n"
+            "প্রথমে যে **Service** টেস্ট করতে চান তার নাম লিখুন।\n"
+            "উদাহরণ: `Facebook` / `WhatsApp`",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]])
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
+            ])
         )
-
-    elif query.data.startswith("test_lang_") and await is_admin(user_id):
-        state = TEST_FLOW_STATE.get(user_id)
-        if not state:
-            await query.answer("⚠️ সেশন মেয়াদোত্তীর্ণ হয়ে গেছে। আবার চেষ্টা করুন।", show_alert=True)
-            return
-
-        selected_lang = query.data.replace("test_lang_", "").upper()
-        phone = state.get("phoneNumber", "")
-        country_iso = state.get("countryISO") or detect_country_iso(phone)
-        service = state.get("serviceName", "Unknown")
-        otp = state.get("otpCode", "")
-
-        # Test uses the same central display formatter as real OTP notifications.
-        test_message = build_otp_display(
-            service=service,
-            phone=phone,
-            otp_text=otp,
-            language=selected_lang,
-            country_iso=country_iso,
-            test=True,
-        )
-
-        target_groups = await get_otp_target_groups()
-        success = 0
-        for target_group in target_groups:
-            try:
-                await context.bot.send_message(
-                    chat_id=target_group,
-                    text=test_message,
-                    parse_mode="Markdown",
-                )
-                success += 1
-            except Exception as e:
-                logging.warning("Test OTP send failed for %s: %s", target_group, e)
-
-        if success:
-            await query.answer(f"✅ Test OTP {success}টি OTP Group-এ পাঠানো হয়েছে!", show_alert=True)
-        else:
-            await query.answer("❌ কোনো OTP Group-এ টেস্ট মেসেজ পাঠানো যায়নি। Group ID/permission চেক করুন।", show_alert=True)
-
-        TEST_FLOW_STATE.pop(user_id, None)
-
-        sys_text = "⚙️ **System Control Hub**\n\nনিচের অপশনগুলো থেকে ম্যানেজ করুন:"
-        sys_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("StexSMS", callback_data="stex_control"), InlineKeyboardButton("Voltx", callback_data="voltx_control")],
-            [InlineKeyboardButton("Zenex", callback_data="zenex_control"), InlineKeyboardButton("YE SMS", callback_data="ye_control")],
-            [InlineKeyboardButton("RanaX", callback_data="ranax_control"), InlineKeyboardButton("Emoji", callback_data="premium_emoji")],
-            [InlineKeyboardButton("Menu Design", callback_data="menu_design"), InlineKeyboardButton("Test", callback_data="test_flow_start")],
-            [InlineKeyboardButton("👑 Admin Mgmt", callback_data="adm_mgmt_menu"), InlineKeyboardButton("⚙️ Force Join", callback_data="adm_fj_menu")],
-            [InlineKeyboardButton("👥 User Mgmt", callback_data="adm_usermgmt_menu"), InlineKeyboardButton("💬 OTP Groups", callback_data="adm_otpgroup_menu")],
-            [InlineKeyboardButton("🚀 X-Rony Panel", callback_data="adm_xrony_menu")],
-            [InlineKeyboardButton("🔙 Back", callback_data="adm_back")]
-        ])
-        await query.message.edit_text(sys_text, parse_mode="Markdown", reply_markup=sys_keyboard)
 
     # --- Menu Design Control Hub ---
     elif query.data == "menu_design" and await is_admin(user_id):
@@ -447,6 +428,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]}})
         await query.answer("✅ সকল মেনু এবং বাটন ডিফল্ট সেটিংয়ে ফিরিয়ে আনা হয়েছে!", show_alert=True)
         
+        # রিফ্রেশ মেনু ডিজাইন প্যানেল
         menu_text = f"🎨 **Menu & Button Customization Hub**\n\nবটের স্টার্ট মেসেজ এবং রিপ্লাই বাটনগুলোর নাম এখান থেকে আপনার পছন্দমতো পরিবর্তন করতে পারবেন।"
         menu_keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("✏️ Edit Start Menu", callback_data="m_edit_start"), InlineKeyboardButton("✏️ Edit GET NUMBER", callback_data="m_edit_get")],
@@ -1318,15 +1300,11 @@ async def otp_group_listener(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 {"$inc": {"balance": current_otp_rate, "total_earned": current_otp_rate}}
             )
             
-            country_iso = detect_country_iso(phone)
-            user_msg = build_otp_display(
-                service=service,
-                phone=phone,
-                otp_text=text,
-                language="EN",
-                country_iso=country_iso,
-                test=False,
-                rate=current_otp_rate,
+            user_msg = (
+                f"💬 #OTP_Received `{phone}`\n"
+                f"📥 **OTP Received!**\n\n"
+                f"💬 `{text}`\n\n"
+                f"💵 Added to Balance: `+{current_otp_rate}৳`"
             )
             
             keyboard = InlineKeyboardMarkup([
@@ -1359,7 +1337,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == "🔙 Back":
-        for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_FLOW_STATE]:
+        for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_STATE]:
             if user_id in state_dict:
                 del state_dict[user_id]
             
@@ -1387,52 +1365,118 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- Test Flow State Handler ---
-    if await is_admin(user_id) and user_id in TEST_FLOW_STATE:
-        state = TEST_FLOW_STATE[user_id]
+    # --- Admin OTP Group Test State Handler ---
+    if await is_admin(user_id) and user_id in TEST_STATE:
+        state = TEST_STATE[user_id]
         step = state.get("step")
 
-        if step == "WAITING_FOR_SERVICE":
-            state["serviceName"] = text.strip()
-            state["step"] = "WAITING_FOR_PHONE"
-            TEST_FLOW_STATE[user_id] = state
-            await update.message.reply_text("📱 এবার ফোন নম্বরটি লিখে পাঠান:")
-            return
-        elif step == "WAITING_FOR_PHONE":
-            phone = normalize_phone(text.strip())
-            if not phone or not any(ch.isdigit() for ch in phone):
-                await update.message.reply_text("❌ সঠিক ফোন নম্বর দিন। উদাহরণ: `+601862810138`", parse_mode="Markdown")
+        if step == "GET_SERVICE":
+            service = text.strip()
+            if not service:
+                await update.message.reply_text(
+                    "❌ Service নাম খালি রাখা যাবে না। আবার লিখুন:",
+                    reply_markup=back_keyboard()
+                )
                 return
-            state["phoneNumber"] = phone
-            state["countryISO"] = detect_country_iso(phone)
-            state["step"] = "WAITING_FOR_OTP"
-            TEST_FLOW_STATE[user_id] = state
+            state["service"] = service
+            state["step"] = "GET_NUMBER"
+            TEST_STATE[user_id] = state
             await update.message.reply_text(
-                f"🔑 এবার ওটিপি (OTP) কোডটি লিখে পাঠান:\n\n🌍 Detected Country: `{state['countryISO']}`",
-                parse_mode="Markdown"
+                "📞 এবার **Phone Number** লিখুন।\n\n"
+                "উদাহরণ: `+601862810138`",
+                parse_mode="Markdown",
+                reply_markup=back_keyboard()
             )
             return
-        elif step == "WAITING_FOR_OTP":
-            state["otpCode"] = text.strip()
-            state["step"] = "WAITING_FOR_LANG"
-            TEST_FLOW_STATE[user_id] = state
-            
-            lang_keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("EN", callback_data="test_lang_en"),
-                    InlineKeyboardButton("FR", callback_data="test_lang_fr")
-                ],
-                [
-                    InlineKeyboardButton("ID", callback_data="test_lang_id"),
-                    InlineKeyboardButton("BN", callback_data="test_lang_bn")
-                ]
-            ])
-            country_iso = state.get("countryISO", "UN")
+
+        elif step == "GET_NUMBER":
+            phone = text.strip()
+            normalized = re.sub(r"[^\d+]", "", phone)
+            if not re.fullmatch(r"\+\d{7,15}", normalized):
+                await update.message.reply_text(
+                    "❌ সঠিক আন্তর্জাতিক Phone Number দিন।\n"
+                    "উদাহরণ: `+601862810138`",
+                    parse_mode="Markdown",
+                    reply_markup=back_keyboard()
+                )
+                return
+
+            country = detect_test_country(normalized)
+            state["phone"] = normalized
+            state["country"] = country
+            state["step"] = "GET_OTP"
+            TEST_STATE[user_id] = state
             await update.message.reply_text(
-                f"🌐 মেসেজের ভাষা সিলেক্ট করুন:\n\n🌍 Country: `{country_iso}`\n💡 Language code 2 অক্ষরের হবে (EN, FR, ID, BN ইত্যাদি)।",
+                f"🌍 **Detected Country:** `{country}`\n\n"
+                "🔐 এবার **OTP Code** লিখুন।\n"
+                "উদাহরণ: `054627`",
                 parse_mode="Markdown",
-                reply_markup=lang_keyboard
+                reply_markup=back_keyboard()
             )
+            return
+
+        elif step == "GET_OTP":
+            otp = text.strip()
+            if not re.fullmatch(r"\d{4,8}", otp):
+                await update.message.reply_text(
+                    "❌ OTP অবশ্যই 4–8 সংখ্যার হতে হবে।\n"
+                    "উদাহরণ: `054627`",
+                    parse_mode="Markdown",
+                    reply_markup=back_keyboard()
+                )
+                return
+
+            state["otp"] = otp
+            state["step"] = "GET_LANGUAGE"
+            TEST_STATE[user_id] = state
+            await update.message.reply_text(
+                "🌐 এবার **Language Code** লিখুন।\n\n"
+                "শুধু 2টি অক্ষর দিন, যেমন: `EN`, `FR`, `ID`",
+                parse_mode="Markdown",
+                reply_markup=back_keyboard()
+            )
+            return
+
+        elif step == "GET_LANGUAGE":
+            language = text.strip().upper()
+            if not re.fullmatch(r"[A-Z]{2}", language):
+                await update.message.reply_text(
+                    "❌ Language Code অবশ্যই 2টি অক্ষরের হতে হবে।\n"
+                    "উদাহরণ: `EN` / `FR` / `ID`",
+                    parse_mode="Markdown",
+                    reply_markup=back_keyboard()
+                )
+                return
+
+            service = state["service"]
+            phone = state["phone"]
+            otp = state["otp"]
+            country = state["country"]
+            del TEST_STATE[user_id]
+
+            processing = await update.message.reply_text(
+                "⏳ Test OTP configured OTP group-এ পাঠানো হচ্ছে..."
+            )
+
+            success, failed, total = await send_test_otp_to_configured_groups(
+                context, service, phone, otp, language, country
+            )
+
+            result_text = (
+                "🧪 **OTP Group Test Complete**\n\n"
+                f"📱 Service: `{service}`\n"
+                f"📞 Number: `{phone}`\n"
+                f"🌍 Country: `{country}`\n"
+                f"🔐 OTP: `{otp}`\n"
+                f"🌐 Language: `{language}`\n\n"
+                f"📤 Groups Found: `{total}`\n"
+                f"✅ Sent: `{success}`\n"
+                f"❌ Failed: `{failed}`"
+            )
+            try:
+                await processing.edit_text(result_text, parse_mode="Markdown")
+            except Exception:
+                await update.message.reply_text(result_text, parse_mode="Markdown")
             return
 
     # --- Menu Customization State Handler ---
@@ -1951,7 +1995,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         if await is_admin(user_id) and text == "":
             pass
-        elif not update.message.document and not any(user_id in d for d in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_FLOW_STATE]):
+        elif not update.message.document and not any(user_id in d for d in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_STATE]):
             reply_markup = await build_main_menu(user_id)
             await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন।", reply_markup=reply_markup)
 
@@ -2002,4 +2046,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
