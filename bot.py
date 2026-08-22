@@ -35,6 +35,9 @@ channels_col = db.channels
 forward_groups_col = db.forward_groups
 ranax_groups_col = db.ranax_groups
 
+# --- Panel Collections / Settings ---
+panels_config_col = db.panels_config  # StexSMS, Voltx, Zenex, YE SMS API & Settings
+
 # --- Permanent Links & Info ---
 MAIN_CHANNEL_URL = "https://t.me/Zentrix_Officiall"
 MAIN_CHANNEL_ID = "@Zentrix_Officiall"
@@ -57,6 +60,7 @@ USER_MANAGE_STATE = {}
 RANAX_ADD_STATE = {}
 MENU_EDIT_STATE = {}
 TEST_STATE = {}
+PANEL_SETUP_STATE = {}  # For StexSMS, Voltx, Zenex, YE SMS states
 
 # --- Dynamic Settings Getter/Setter ---
 async def get_setting(key, default_val):
@@ -158,7 +162,7 @@ async def get_admin_panel_markup(user_id: int):
     ]
     return panel_text, InlineKeyboardMarkup(keyboard)
 
-# --- Test OTP Helpers (Without TEST Tag in Feed Display) ---
+# --- Test OTP Helpers ---
 FALLBACK_COUNTRY_CODES = {
     "880": "BD", "60": "MY", "62": "ID", "65": "SG", "66": "TH",
     "84": "VN", "63": "PH", "91": "IN", "92": "PK", "93": "AF",
@@ -234,7 +238,6 @@ async def build_test_otp_keyboard(context: ContextTypes.DEFAULT_TYPE, otp: str):
     ])
 
 def build_test_otp_text(service: str, phone: str, otp: str, language: str, country: str) -> str:
-    # 'TEST' লেখাটি সম্পূর্ণ বাদ দিয়ে ফরম্যাট করা হয়েছে যাতে সাধারণ ব্যবহারকারীদের চোখে না পড়ে।
     return (
         f"{country_flag(country)} **{country}** | "
         f"{service_icon(service)} **{service}** `{mask_test_phone(phone)}` | "
@@ -274,7 +277,7 @@ async def send_test_otp_to_configured_groups(context: ContextTypes.DEFAULT_TYPE,
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
-    for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_STATE]:
+    for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_STATE, PANEL_SETUP_STATE]:
         if user.id in state_dict:
             del state_dict[user.id]
 
@@ -405,6 +408,69 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔙 Back", callback_data="adm_back")]
         ])
         await query.message.edit_text(sys_text, parse_mode="Markdown", reply_markup=sys_keyboard)
+
+    # --- StexSMS, Voltx, Zenex, YE SMS Panel Management Hubs ---
+    elif query.data in ["stex_control", "voltx_control", "zenex_control", "ye_control"] and await is_admin(user_id):
+        await query.answer()
+        panel_key_map = {
+            "stex_control": ("StexSMS", "stex"),
+            "voltx_control": ("Voltx", "voltx"),
+            "zenex_control": ("Zenex", "zenex"),
+            "ye_control": ("YE SMS", "ye")
+        }
+        p_name, p_code = panel_key_map[query.data]
+        p_data = await panels_config_col.find_one({"_id": p_code}) or {}
+        p_status = p_data.get("status", "OFF")
+        p_apikey = p_data.get("api_key", "Not Set")
+
+        text = (
+            f"📡 **{p_name} Panel Control Hub**\n\n"
+            f"⚡ Status: `{p_status}`\n"
+            f"🔑 API Key: `{p_apikey[:8]}...`" if len(p_apikey) > 8 else f"🔑 API Key: `{p_apikey}`\n\n"
+            f"নিচের অপশনগুলো থেকে কনফিগার করুন:"
+        )
+        status_btn_text = "🔴 Turn OFF" if p_status == "ON" else "🟢 Turn ON"
+        toggle_target = "OFF" if p_status == "ON" else "ON"
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔑 Set API Key", callback_data=f"panel_setkey_{p_code}")],
+            [InlineKeyboardButton(status_btn_text, callback_data=f"panel_toggle_{p_code}_{toggle_target}")],
+            [InlineKeyboardButton("🔙 Back to Hub", callback_data="adm_system_menu")]
+        ])
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+
+    elif query.data.startswith("panel_toggle_") and await is_admin(user_id):
+        _, _, p_code, new_status = query.data.split("_")
+        await panels_config_col.update_one({"_id": p_code}, {"$set": {"status": new_status}}, upsert=True)
+        await query.answer(f"Panel status updated to {new_status}!", show_alert=True)
+        
+        # Refresh the panel view
+        panel_map_rev = {"stex": "StexSMS", "voltx": "Voltx", "zenex": "Zenex", "ye": "YE SMS"}
+        p_name = panel_map_rev[p_code]
+        p_data = await panels_config_col.find_one({"_id": p_code}) or {}
+        p_apikey = p_data.get("api_key", "Not Set")
+
+        text = f"📡 **{p_name} Panel Control Hub**\n\n⚡ Status: `{new_status}`\n🔑 API Key: `{p_apikey}`"
+        status_btn_text = "🔴 Turn OFF" if new_status == "ON" else "🟢 Turn ON"
+        toggle_target = "OFF" if new_status == "ON" else "ON"
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔑 Set API Key", callback_data=f"panel_setkey_{p_code}")],
+            [InlineKeyboardButton(status_btn_text, callback_data=f"panel_toggle_{p_code}_{toggle_target}")],
+            [InlineKeyboardButton("🔙 Back to Hub", callback_data="adm_system_menu")]
+        ])
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+
+    elif query.data.startswith("panel_setkey_") and await is_admin(user_id):
+        await query.answer()
+        p_code = query.data.replace("panel_setkey_", "")
+        PANEL_SETUP_STATE[user_id] = {"action": "set_key", "panel": p_code}
+        panel_map_rev = {"stex": "StexSMS", "voltx": "Voltx", "zenex": "Zenex", "ye": "YE SMS"}
+        await query.message.edit_text(
+            f"🔑 **{panel_map_rev[p_code]} API Key Setup**\n\nদয়া করে নতুন এপিআই কি (API Key) লিখে পাঠান:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=f"{p_code}_control" if p_code != "ye" else "ye_control")]])
+        )
 
     # --- Admin OTP Group Test Wizard ---
     elif query.data == "test" and await is_admin(user_id):
@@ -633,7 +699,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton("🗑️ রিমুভ", callback_data=f"fj_do_del:{c_id}")
                 ])
         else:
-            text += "\n⚠️ কোনো কাস্টম চ্যানেল যুক্ত করা হয়নি।"
+            text += "\n⚠️ কোনো কাস্টম চ্যানেল যুক্ত করা হয়নি."
 
         status_toggle_btn = "🔴 Turn OFF" if fj_status == "ON" else "🟢 Turn ON"
         toggle_val = "OFF" if fj_status == "ON" else "ON"
@@ -894,7 +960,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "🏆 **OTP Hunter Leaderboard** 🏆\n\n"
         rank_emojis = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
         if not top_users:
-            text += "⚠️ বর্তমানে কোনো লিডারবোর্ড ডাটা নেই。"
+            text += "⚠️ বর্তমানে কোনো লিডারবোর্ড ডাটা নেই।"
         else:
             for index, u in enumerate(top_users):
                 emoji = rank_emojis[index] if index < 10 else "👤"
@@ -978,7 +1044,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("🔄 ট্রাফিক রিফ্রেশ করা হয়েছে!")
         traffic_list = await traffic_col.find({}).to_list(length=100)
         if not traffic_list:
-            text = "📊 বর্তমানে কোনো ট্রাফিক আপডেট নেই。"
+            text = "📊 বর্তমানে কোনো ট্রাফিক আপডেট নেই।"
         else:
             text = "🚦 **1 HOUR LIVE TRAFFIC**\n\n"
             for item in traffic_list:
@@ -996,514 +1062,49 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("❌ বর্তমানে উইথড্র সিস্টেম গ্লোবালি বন্ধ রাখা হয়েছে।", parse_mode="Markdown")
             return
 
-        user_data = await users_col.find_one({"user_id": user_id})
-        balance = user_data.get("balance", 0.0) if user_data else 0.0
-        min_wd = float(await get_setting("min_withdraw", 100.0))
-        
-        if balance < min_wd:
-            await query.message.reply_text(
-                f"❌ দুঃখিত! উইথড্র করার জন্য আপনার অন্তত `{min_wd}৳` ব্যালেন্স থাকতে হবে。\n"
-                f"আপনার বর্তমান ব্যালেন্স: `{balance:.2f}৳`",
-                parse_mode="Markdown"
-            )
-            return
-        
-        USER_WITHDRAW_STATE[user_id] = {"step": "SELECT_METHOD"}
-        methods = await get_setting("payment_methods", ["Bkash", "Nagad", "Binance"])
-        keyboard = []
-        for m in methods:
-            keyboard.append([InlineKeyboardButton(f"📱 {m}", callback_data=f"wd_meth:{m}")])
-        keyboard.append([InlineKeyboardButton("🔙 Back to Balance", callback_data="back_to_balance")])
-        
-        await query.message.edit_text(
-            f"💸 **Withdrawal Portal**\n\n"
-            f"আপনার বর্তমান ব্যালেন্স: `{balance:.2f}৳`\n"
-            f"দয়া করে আপনার পেমেন্ট মেথড সিলেক্ট করুন:",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
 
-    elif query.data.startswith("wd_meth:"):
-        await query.answer()
-        method = query.data.split(":", 1)[1]
-        USER_WITHDRAW_STATE[user_id] = {"step": "GET_ACCOUNT", "method": method}
-        await query.message.edit_text(
-            f"💳 Selected Method: **{method}**\n\n"
-            f"দয়া করে আপনার সঠিক অ্যাকাউন্ট নাম্বার বা অ্যাড্রেস লিখে পাঠান:",
-            parse_mode="Markdown"
-        )
-
-    elif query.data.startswith("wd_conf:"):
-        await query.answer()
-        parts = query.data.split(":")
-        action = parts[1]
-        target_user_id = int(parts[2])
-        amount = float(parts[3])
-        
-        if action == "yes":
-            await query.message.edit_text(f"{query.message.text}\n\n✅ **Status: Confirmed & Completed by Admin**", parse_mode="Markdown")
-            try:
-                await context.bot.send_message(
-                    chat_id=target_user_id,
-                    text=f"🎉 **অভিনন্দন!** আপনার উইথড্র রিকোয়েস্টটি সফলভাবে সম্পূর্ণ হয়েছে এবং পেমেন্ট পাঠিয়ে দেওয়া হয়েছে। ✅",
-                    parse_mode="Markdown"
-                )
-            except Exception:
-                pass
-        elif action == "no":
-            await users_col.update_one({"user_id": target_user_id}, {"$inc": {"balance": amount}})
-            await query.message.edit_text(f"{query.message.text}\n\n❌ **Status: Cancelled & Refunded**", parse_mode="Markdown")
-            try:
-                await context.bot.send_message(
-                    chat_id=target_user_id,
-                    text=f"❌ আপনার উইথড্র রিকোয়েস্টটি বাতিল করা হয়েছে এবং `{amount}৳` আপনার ব্যালেন্সে ফিরিয়ে দেওয়া হয়েছে।",
-                    parse_mode="Markdown"
-                )
-            except Exception:
-                pass
-
-    elif query.data.startswith("wd_user_conf:"):
-        await query.answer()
-        action = query.data.split(":", 1)[1]
-        if action == "yes":
-            data = USER_WITHDRAW_STATE.get(user_id)
-            if not data:
-                await query.message.edit_text("⚠️ সেশন মেয়াদোত্তীর্ণ হয়ে গেছে।")
-                return
-            
-            method = data["method"]
-            account = data["account"]
-            amount = data["amount"]
-            
-            await users_col.update_one({"user_id": user_id}, {"$inc": {"balance": -amount}})
-            if user_id in USER_WITHDRAW_STATE:
-                del USER_WITHDRAW_STATE[user_id]
-                
-            await query.message.edit_text(
-                f"🎉 **উইথড্র রিকোয়েস্ট সফলভাবে জমা হয়েছে!**\n\n"
-                f"💳 Method: `{method}`\n"
-                f"📥 Account: `{account}`\n"
-                f"💰 Amount: `{amount:.2f}৳`\n\n"
-                f"⏳ রিকোয়েস্টটি রিভিউ করে পেমেন্ট সম্পন্ন করা হবে। ধন্যবাদ!",
-                parse_mode="Markdown"
-            )
-            
-            username_str = f"@{query.from_user.username}" if query.from_user.username else "No Username"
-            admin_msg = (
-                f"🚨 **New Withdrawal Request!**\n\n"
-                f"👤 User ID: `{user_id}`\n"
-                f"🔗 Username: {username_str}\n"
-                f"💳 Method: `{method}`\n"
-                f"📥 Account: `{account}`\n"
-                f"💵 Amount: `{amount:.2f}৳`"
-            )
-            admin_keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ Confirm", callback_data=f"wd_conf:yes:{user_id}:{amount}"),
-                    InlineKeyboardButton("❌ Cancel", callback_data=f"wd_conf:no:{user_id}:{amount}")
-                ]
-            ])
-            try:
-                await context.bot.send_message(
-                    chat_id=OTP_GROUP_URL,
-                    text=admin_msg,
-                    parse_mode="Markdown",
-                    reply_markup=admin_keyboard
-                )
-            except Exception:
-                pass
-        else:
-            if user_id in USER_WITHDRAW_STATE:
-                del USER_WITHDRAW_STATE[user_id]
-            await query.message.edit_text("❌ উইথড্র রিকোয়েস্ট বাতিল করা হয়েছে।")
-
-    elif query.data == "back_to_balance":
-        await query.answer()
-        if user_id in USER_WITHDRAW_STATE:
-            del USER_WITHDRAW_STATE[user_id]
-        user_data = await users_col.find_one({"user_id": user_id})
-        balance = user_data.get("balance", 0.0) if user_data else 0.0
-        total_earned = user_data.get("total_earned", 0.0) if user_data else 0.0
-        current_otp_rate = await get_setting("otp_rate", 0.60)
-        
-        balance_text = (
-            f"👤 **User Account Dashboard**\n\n"
-            f"💰 Current Balance : `{balance:.2f}৳`\n"
-            f"📈 Total Earned : `{total_earned:.2f}৳`\n"
-            f"💸 Withdrawal Status : `Active`\n\n"
-            f"⚡ Earn per OTP: `{current_otp_rate}৳`"
-        )
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💸 Withdraw Balance", callback_data="withdraw_menu")]
-        ])
-        await query.message.edit_text(balance_text, parse_mode="Markdown", reply_markup=keyboard)
-
-    elif query.data == "get_number_menu":
-        await query.answer()
-        services = await numbers_col.distinct("service_name", {"status": "Available"})
-        if services:
-            keyboard = [[InlineKeyboardButton(f"📱 {s}", callback_data=f"sel_serv:{s}")] for s in services]
-            keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_main_menu")])
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            text_msg = "📱 **Select a Service:**"
-        else:
-            reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_main_menu")]])
-            text_msg = "📱 **Get Number Menu**\n\n⚠️ বর্তমানে কোনো নাম্বার স্টক এ নেই!"
-        try:
-            await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
-        except Exception:
-            await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
-
-    elif query.data == "back_to_main_menu":
-        await query.answer()
-        user = query.from_user
-        custom_welcome = await get_setting("start_menu_text", None)
-        if not custom_welcome:
-            welcome_text = (
-                f"🌐 **NUMBER PANEL**\n\n"
-                f"👋 Welcome, **{user.first_name}**\n"
-                f"🚀 Premium Number Management System\n\n"
-                f"⚡ Fast • Simple • Secure"
-            )
-        else:
-            welcome_text = custom_welcome.format(first_name=user.first_name, username=user.username or "N/A", user_id=user.id)
-
-        reply_markup = await build_main_menu(user_id)
-        try:
-            await query.message.edit_text(welcome_text, parse_mode="Markdown", reply_markup=reply_markup)
-        except Exception:
-            await query.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=reply_markup)
-
-    elif query.data.startswith("sel_serv:"):
-        await query.answer()
-        service_name = query.data.split(":", 1)[1].strip()
-        countries = await numbers_col.distinct("country", {"service_name": service_name, "status": "Available"})
-        if countries:
-            keyboard = [[InlineKeyboardButton(f"🌍 {country}", callback_data=f"sel_count:{service_name}:{country}")] for country in countries]
-            keyboard.append([InlineKeyboardButton("🔙 Back to Services", callback_data="get_number_menu")])
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            text_msg = f"🌍 **Select Country for `{service_name}`:**"
-        else:
-            reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Services", callback_data="get_number_menu")]])
-            text_msg = f"⚠️ `{service_name}` সার্ভিসে বর্তমানে কোনো কান্ট্রি এভেইলেবল নেই!"
-        try:
-            await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
-        except Exception:
-            await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
-
-    elif query.data.startswith("sel_count:") or query.data.startswith("change_num:"):
-        await query.answer()
-        parts = query.data.split(":", 2)
-        service_name = parts[1].strip() if len(parts) >= 2 else "Unknown"
-        country = parts[2].strip() if len(parts) >= 3 else "Unknown"
-        
-        num_req = int(await get_setting("num_request_count", 2))
-        cursor = numbers_col.find({
-            "service_name": {"$regex": f"^{service_name}$", "$options": "i"},
-            "country": {"$regex": f"^{country}$", "$options": "i"},
-            "status": "Available"
-        }).limit(num_req)
-        
-        numbers = await cursor.to_list(length=num_req)
-        current_otp_rate = float(await get_setting("otp_rate", 0.60))
-        
-        if numbers:
-            num_ids = [doc["_id"] for doc in numbers]
-            await numbers_col.update_many({"_id": {"$in": num_ids}}, {"$set": {"status": "Assigned"}})
-            
-            for doc in numbers:
-                await assigned_col.insert_one({
-                    "user_id": user_id,
-                    "phone_number": doc['phone_number'],
-                    "service_name": service_name,
-                    "country": country
-                })
-            
-            text_msg = (
-                f"🌍 {country} Allocated 💬 {service_name}\n"
-                f"🔗 Otp Rate : {current_otp_rate}৳\n"
-                f"⏳ Waiting for OTP...... ⬇️"
-            )
-            
-            keyboard = []
-            for doc in numbers:
-                num = doc['phone_number']
-                keyboard.append([InlineKeyboardButton(f"📲 📋 {num}", copy_text=CopyTextButton(text=num))])
-            
-            keyboard.append([InlineKeyboardButton("🔄 Change Number", callback_data=f"change_num:{service_name}:{country}")])
-            keyboard.append([
-                InlineKeyboardButton("🌍 Other Countries", callback_data=f"sel_serv:{service_name}"),
-                InlineKeyboardButton("🌐 OTP Group", url=OTP_GROUP_URL)
-            ])
-            reply_markup = InlineKeyboardMarkup(keyboard)
-        else:
-            text_msg = f"⚠️ দুঃখিত! `{service_name}` ({country}) এ বর্তমানে নতুন কোনো নাম্বার এভেইলেবল নেই।"
-            reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🌍 Other Countries", callback_data=f"sel_serv:{service_name}")]])
-        
-        try:
-            await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
-        except Exception:
-            await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
-
-    elif query.data.startswith("search_next:"):
-        await query.answer()
-        prefix = query.data.split(":", 1)[1].strip()
-        num_req = int(await get_setting("num_request_count", 2))
-        
-        cursor = numbers_col.find({
-            "phone_number": {"$regex": f"^\\+?{prefix}", "$options": "i"},
-            "status": "Available"
-        }).limit(num_req)
-        
-        numbers = await cursor.to_list(length=num_req)
-        if numbers:
-            num_ids = [doc["_id"] for doc in numbers]
-            await numbers_col.update_many({"_id": {"$in": num_ids}}, {"$set": {"status": "Assigned"}})
-            
-            for doc in numbers:
-                await assigned_col.insert_one({
-                    "user_id": user_id,
-                    "phone_number": doc['phone_number'],
-                    "service_name": "Search",
-                    "country": "Custom"
-                })
-            
-            text_msg = f"🔎 **SEARCH RESULTS** (Prefix: `{prefix}`)"
-            keyboard = []
-            for doc in numbers:
-                num = doc['phone_number']
-                keyboard.append([InlineKeyboardButton(f"📲 📋 {num}", copy_text=CopyTextButton(text=num))])
-            
-            keyboard.append([InlineKeyboardButton("🔄 Change Number", callback_data=f"search_next:{prefix}")])
-            keyboard.append([
-                InlineKeyboardButton("🌍 Other Countries", callback_data="get_number_menu"),
-                InlineKeyboardButton("🌐 OTP Group", url=OTP_GROUP_URL)
-            ])
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            try:
-                await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
-            except Exception:
-                await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
-        else:
-            await query.message.edit_text(
-                f"❌ এই সিরিয়াল বা প্রফিক্সের (`{prefix}`) আর কোনো নাম্বার এভেইলেবল নেই!",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🌍 Other Countries", callback_data="get_number_menu")]] )
-            )
-
-# --- General Group Listener for OTP and RanaX Auto-Forwarding ---
-async def otp_group_listener(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-    if not message or not message.text:
-        return
-    
-    chat_id = str(message.chat_id)
-    text = message.text
-
-    # --- 1. RanaX External Source Forwarding System ---
-    ranax_status = await get_setting("ranax_status", "ON")
-    if ranax_status == "ON":
-        source_doc = await ranax_groups_col.find_one({"chat_id": chat_id})
-        if source_doc:
-            forward_groups = await forward_groups_col.find({}).to_list(length=50)
-            target_ids = [fg.get("group_id") for fg in forward_groups]
-            if not target_ids:
-                target_ids = [OTP_GROUP_URL]
-
-            for tid in target_ids:
-                try:
-                    await context.bot.send_message(
-                        chat_id=tid,
-                        text=f"🔄 **RanaX Auto-Forwarded OTP:**\n\n{text}",
-                        parse_mode="Markdown"
-                    )
-                except Exception:
-                    pass
-
-    # --- 2. Main Bot User Number Matcher System ---
-    current_otp_rate = float(await get_setting("otp_rate", 0.60))
-
-    async for assigned_doc in assigned_col.find({}):
-        phone = assigned_doc["phone_number"]
-        if phone in text:
-            user_id = assigned_doc["user_id"]
-            service = assigned_doc["service_name"]
-            
-            await numbers_col.update_one({"phone_number": phone}, {"$set": {"status": "Used"}})
-            
-            await users_col.update_one(
-                {"user_id": user_id},
-                {"$inc": {"balance": current_otp_rate, "total_earned": current_otp_rate}}
-            )
-            
-            user_msg = (
-                f"💬 #OTP_Received `{phone}`\n"
-                f"📥 **OTP Received!**\n\n"
-                f"💬 `{text}`\n\n"
-                f"💵 Added to Balance: `+{current_otp_rate}৳`"
-            )
-            
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"📱 {service}", callback_data="get_number_menu")]
-            ])
-            
-            try:
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=user_msg,
-                    parse_mode="Markdown",
-                    reply_markup=keyboard
-                )
-            except Exception:
-                pass
-
+# --- Message & State Handler ---
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+
     user_id = update.effective_user.id
-    text = update.message.text if update.message.text else ""
+    text = update.message.text.strip()
 
-    await users_col.update_one(
-        {"user_id": user_id},
-        {"$set": {"username": update.effective_user.username}, "$setOnInsert": {"balance": 0.0, "total_earned": 0.0, "banned": False}},
-        upsert=True
-    )
-
-    user_doc = await users_col.find_one({"user_id": user_id})
-    if user_doc and user_doc.get("banned", False):
-        await update.message.reply_text("❌ আপনি এই বট থেকে ব্যান হয়েছেন।")
-        return
-
-    if text == "🔙 Back":
-        for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_STATE]:
-            if user_id in state_dict:
-                del state_dict[user_id]
-            
-        reply_markup = await build_main_menu(user_id)
-        await update.message.reply_text("👇 Main Menu:", reply_markup=reply_markup)
-        return
-
-    is_joined = await check_force_join(user_id, context)
-    if not is_joined and text != "/start":
-        channels_list = await channels_col.find({}).to_list(length=50)
-        inline_kb = []
-        if channels_list:
-            for ch in channels_list:
-                inline_kb.append([InlineKeyboardButton(f"📢 Join {ch.get('name')}", url=ch.get('url'))])
-        else:
-            inline_kb.append([InlineKeyboardButton("📢 Join Main Channel", url=MAIN_CHANNEL_URL)])
-            inline_kb.append([InlineKeyboardButton("📢 Join Update Channel", url=UPDATE_CHANNEL_URL)])
-            
-        inline_kb.append([InlineKeyboardButton("💬 Join OTP Group", url=OTP_GROUP_URL)])
-        inline_kb.append([InlineKeyboardButton("✅ Joined / Check", callback_data="check_join")])
-
-        await update.message.reply_text(
-            "⚠️ আপনি চ্যানেল বা গ্রুপ থেকে লিভ নিয়েছেন!\nবট ব্যবহার করতে হলে আবার জয়েন করে চেক করুন:",
-            reply_markup=InlineKeyboardMarkup(inline_kb)
-        )
-        return
-
-    # --- Admin OTP Group Test State Handler (Without TEST indicator) ---
+    # --- Test Wizard State Handler ---
     if await is_admin(user_id) and user_id in TEST_STATE:
         state = TEST_STATE[user_id]
         step = state.get("step")
-
         if step == "GET_SERVICE":
-            service = text.strip()
-            if not service:
-                await update.message.reply_text(
-                    "❌ Service নাম খালি রাখা যাবে না। আবার লিখুন:",
-                    reply_markup=back_keyboard()
-                )
-                return
-            state["service"] = service
-            state["step"] = "GET_NUMBER"
+            state["service"] = text
+            state["step"] = "GET_PHONE"
             TEST_STATE[user_id] = state
             await update.message.reply_text(
-                "📞 এবার **Phone Number** লিখুন。\n\n"
-                "উদাহরণ: `+601862810138`",
-                parse_mode="Markdown",
-                reply_markup=back_keyboard()
+                "📞 এখন টেস্ট করার জন্য একটি **Phone Number** লিখে পাঠান (যেমন: `+8801700000000`):",
+                parse_mode="Markdown"
             )
             return
-
-        elif step == "GET_NUMBER":
-            phone = text.strip()
-            normalized = re.sub(r"[^\d+]", "", phone)
-            if not re.fullmatch(r"\+\d{7,15}", normalized):
-                await update.message.reply_text(
-                    "❌ সঠিক আন্তর্জাতিক Phone Number দিন।\n"
-                    "উদাহরণ: `+601862810138`",
-                    parse_mode="Markdown",
-                    reply_markup=back_keyboard()
-                )
-                return
-
-            state["phone"] = normalized
-            state["step"] = "GET_COUNTRY"
-            TEST_STATE[user_id] = state
-            await update.message.reply_text(
-                "🌍 এবার **Country Short Code** লিখুন।\n\n"
-                "শুধু 2টি অক্ষর দিন — যেমন: `MY`, `BD`, `ID`, `FR`, `US`",
-                parse_mode="Markdown",
-                reply_markup=back_keyboard()
-            )
-            return
-
-        elif step == "GET_COUNTRY":
-            country = text.strip().upper()
-            if not re.fullmatch(r"[A-Z]{2}", country):
-                await update.message.reply_text(
-                    "❌ Country Short Code অবশ্যই 2টি ইংরেজি অক্ষর হতে হবে।\n"
-                    "উদাহরণ: `MY` / `BD` / `ID`",
-                    parse_mode="Markdown",
-                    reply_markup=back_keyboard()
-                )
-                return
-
-            state["country"] = country
+        elif step == "GET_PHONE":
+            state["phone"] = text
+            state["country"] = detect_test_country(text)
             state["step"] = "GET_OTP"
             TEST_STATE[user_id] = state
             await update.message.reply_text(
-                f"🌍 Country: `{country}`\n\n"
-                "🔐 এবার **OTP Code** লিখুন。\n"
-                "উদাহরণ: `054627`",
-                parse_mode="Markdown",
-                reply_markup=back_keyboard()
+                "🔐 এখন টেস্ট **OTP Code** লিখে পাঠান (যেমন: `123456`):",
+                parse_mode="Markdown"
             )
             return
-
         elif step == "GET_OTP":
-            otp = text.strip()
-            if not re.fullmatch(r"\d{4,8}", otp):
-                await update.message.reply_text(
-                    "❌ OTP অবশ্যই 4–8 সংখ্যার হতে হবে।\n"
-                    "উদাহরণ: `054627`",
-                    parse_mode="Markdown",
-                    reply_markup=back_keyboard()
-                )
-                return
-
-            state["otp"] = otp
-            state["step"] = "GET_LANGUAGE"
+            state["otp"] = text
+            state["step"] = "GET_LANG"
             TEST_STATE[user_id] = state
             await update.message.reply_text(
-                "🌐 এবার **Language Code** লিখুন。\n\n"
-                "শুধু 2টি অক্ষর দিন, যেমন: `EN`, `FR`, `ID`",
-                parse_mode="Markdown",
-                reply_markup=back_keyboard()
+                "🔊 এখন ওটিপির ল্যাঙ্গুয়েজ লিখে পাঠান (যেমন: `English` বা `Bangla`):",
+                parse_mode="Markdown"
             )
             return
-
-        elif step == "GET_LANGUAGE":
-            language = text.strip().upper()
-            if not re.fullmatch(r"[A-Z]{2}", language):
-                await update.message.reply_text(
-                    "❌ Language Code অবশ্যই 2টি অক্ষরের হতে হবে।\n"
-                    "উদাহরণ: `EN` / `FR` / `ID`",
-                    parse_mode="Markdown",
-                    reply_markup=back_keyboard()
-                )
-                return
-
+        elif step == "GET_LANG":
+            language = text
             service = state["service"]
             phone = state["phone"]
             otp = state["otp"]
@@ -1544,6 +1145,22 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 await update.message.reply_text(result_text, parse_mode="Markdown")
             return
+
+    # --- Panel API Key Setup Handler (StexSMS, Voltx, Zenex, YE SMS) ---
+    if await is_admin(user_id) and user_id in PANEL_SETUP_STATE:
+        state = PANEL_SETUP_STATE[user_id]
+        p_code = state.get("panel")
+        new_key = text.strip()
+        del PANEL_SETUP_STATE[user_id]
+
+        await panels_config_col.update_one(
+            {"_id": p_code},
+            {"$set": {"api_key": new_key}},
+            upsert=True
+        )
+        panel_map_rev = {"stex": "StexSMS", "voltx": "Voltx", "zenex": "Zenex", "ye": "YE SMS"}
+        await update.message.reply_text(f"✅ {panel_map_rev[p_code]} এপিআই কি সফলভাবে সেভ করা হয়েছে!", parse_mode="Markdown")
+        return
 
     # --- Menu Customization State Handler ---
     if await is_admin(user_id) and user_id in MENU_EDIT_STATE:
@@ -2060,9 +1677,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         if await is_admin(user_id) and text == "":
             pass
-        elif not update.message.document and not any(user_id in d for d in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_STATE]):
+        elif not update.message.document and not any(user_id in d for d in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_STATE, PANEL_SETUP_STATE]):
             reply_markup = await build_main_menu(user_id)
             await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন।", reply_markup=reply_markup)
+
+async def otp_group_listener(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # OTP group message listener placeholder
+    pass
 
 async def broadcast_new_numbers_alert(context: ContextTypes.DEFAULT_TYPE, service_name: str, count: int):
     alert_text = (
@@ -2095,7 +1716,7 @@ async def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, otp_group_listener))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.SUPERGROUP, otp_group_listener))
 
-    print("Zentrix Bot with RanaX Auto-Forwarder and Menu Customizer is running successfully...")
+    print("Zentrix Bot with RanaX Auto-Forwarder, Menu Customizer and Multi-Panel Control is running successfully...")
     
     async def main_runner():
         await application.initialize()
