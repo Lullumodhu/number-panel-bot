@@ -767,8 +767,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ADMIN_SETTINGS_STATE[user_id] = {"setting": "set_min_withdraw"}
         await query.message.edit_text("💵 নতুন মিনিমাম উইথড্র অ্যামাউন্ট লিখে পাঠান (যেমন: `150`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_xrony_menu")]])
 
-    elif query.data == "xr_set_ref":
-        and await is_admin(user_id):
+    elif query.data == "xr_set_ref" and await is_admin(user_id):
         await query.answer()
         ADMIN_SETTINGS_STATE[user_id] = {"setting": "set_ref_bonus"}
         await query.message.edit_text("👥 নতুন রেফার বোনাস অ্যামাউন্ট লিখে পাঠান (যেমন: `0.05`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_xrony_menu")]])
