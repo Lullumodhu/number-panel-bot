@@ -58,6 +58,18 @@ RANAX_ADD_STATE = {}
 MENU_EDIT_STATE = {}  # মেনু টেক্সট বা বাটন কাস্টমাইজেশনের জন্য স্টেট
 TEST_STATE = {}  # Admin-only OTP Group Test wizard
 
+# --- Safe Provider Panel Configuration ---
+# These settings manage provider/API/service/country/range configuration only.
+# They are intentionally NOT connected to live SMS/OTP APIs or OTP interception.
+PROVIDER_PANEL_STATE = {}
+PROVIDER_DEFINITIONS = {
+    "stex": "StexSMS",
+    "voltx": "Voltx",
+    "zenex": "Zenex",
+    "ye": "YE SMS",
+}
+provider_panel_col = db.provider_panel_config
+
 # --- Dynamic Settings Getter/Setter ---
 async def get_setting(key, default_val):
     res = await settings_col.find_one({"_id": key})
@@ -163,7 +175,7 @@ async def get_admin_panel_markup(user_id: int):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
-    for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_STATE]:
+    for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_STATE, PROVIDER_PANEL_STATE]:
         if user.id in state_dict:
             del state_dict[user.id]
 
@@ -364,9 +376,386 @@ async def send_test_otp_to_configured_groups(context: ContextTypes.DEFAULT_TYPE,
 
     return success, failed, len(target_ids)
 
+async def get_provider_config(provider_key: str) -> dict:
+    """Return/create configuration for one provider panel."""
+    doc = await provider_panel_col.find_one({"provider": provider_key})
+    if not doc:
+        doc = {"provider": provider_key, "api_keys": [], "services": []}
+        await provider_panel_col.insert_one(doc)
+    return doc
+
+
+def provider_root_markup():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("StexSMS", callback_data="stex_control"), InlineKeyboardButton("Voltx", callback_data="voltx_control")],
+        [InlineKeyboardButton("Zenex", callback_data="zenex_control"), InlineKeyboardButton("YE SMS", callback_data="ye_control")],
+        [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")],
+    ])
+
+
+async def render_provider_panel(query, provider_key: str):
+    cfg = await get_provider_config(provider_key)
+    name = PROVIDER_DEFINITIONS[provider_key]
+    keys = cfg.get("api_keys", [])
+    services = cfg.get("services", [])
+    keyboard = [
+        [InlineKeyboardButton("➕ Add API Key", callback_data=f"pp_addkey:{provider_key}")],
+        [InlineKeyboardButton("🗂 View/Del Keys", callback_data=f"pp_keys:{provider_key}")],
+        [InlineKeyboardButton("🛠 Manage Services", callback_data=f"pp_services:{provider_key}")],
+        [InlineKeyboardButton("🌍 Search Country", callback_data=f"pp_searchcountry:{provider_key}")],
+        [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")],
+    ]
+    await query.message.edit_text(
+        f"⚡ **{name} Control Panel**\n\n"
+        f"🔑 Total API Keys: `{len(keys)}`\n"
+        f"📱 Services: `{len(services)}`\n\n"
+        "API key/service/country/range এখানে configuration হিসেবে সংরক্ষণ হবে।\n"
+        "⚠️ Live SMS/OTP API connection এই build-এ চালু করা হয়নি।",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+async def render_provider_services(query, provider_key: str):
+    cfg = await get_provider_config(provider_key)
+    services = cfg.get("services", [])
+    rows = []
+    for i, service in enumerate(services):
+        rows.append([InlineKeyboardButton(
+            f"📱 {service.get('name', 'Unnamed')}",
+            callback_data=f"pp_service:{provider_key}:{i}"
+        )])
+    rows.append([InlineKeyboardButton("➕ Add New Service", callback_data=f"pp_addservice:{provider_key}")])
+    rows.append([InlineKeyboardButton("🔙 Back", callback_data=f"{provider_key}_control")])
+    await query.message.edit_text(
+        f"🛠 **{PROVIDER_DEFINITIONS[provider_key]} Services Manager**\n\n"
+        f"Total Services: `{len(services)}`\n\n"
+        "একাধিক service যোগ করা যাবে।",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def render_provider_keys(query, provider_key: str):
+    cfg = await get_provider_config(provider_key)
+    keys = cfg.get("api_keys", [])
+    rows = []
+    for i, key in enumerate(keys):
+        masked = (key[:4] + "…" + key[-4:]) if len(key) > 8 else "••••••"
+        rows.append([
+            InlineKeyboardButton(f"🔑 {masked}", callback_data="pp_noop"),
+            InlineKeyboardButton("🗑 Delete", callback_data=f"pp_delkey:{provider_key}:{i}"),
+        ])
+    rows.append([InlineKeyboardButton("➕ Add API Key", callback_data=f"pp_addkey:{provider_key}")])
+    rows.append([InlineKeyboardButton("🔙 Back", callback_data=f"{provider_key}_control")])
+    await query.message.edit_text(
+        f"🔑 **{PROVIDER_DEFINITIONS[provider_key]} — API Keys**\n\nTotal: `{len(keys)}`",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def render_provider_service(query, provider_key: str, service_index: int):
+    cfg = await get_provider_config(provider_key)
+    services = cfg.get("services", [])
+    if service_index < 0 or service_index >= len(services):
+        await query.answer("❌ Service পাওয়া যায়নি", show_alert=True)
+        return
+    service = services[service_index]
+    countries = service.get("countries", [])
+    rows = []
+    for ci, country in enumerate(countries):
+        rows.append([InlineKeyboardButton(
+            f"🌍 {country.get('name', 'Unknown')}",
+            callback_data=f"pp_country:{provider_key}:{service_index}:{ci}"
+        )])
+    rows.append([InlineKeyboardButton("🌍 Add Country", callback_data=f"pp_addcountry:{provider_key}:{service_index}")])
+    rows.append([InlineKeyboardButton("🗑 Delete Service", callback_data=f"pp_delservice:{provider_key}:{service_index}")])
+    rows.append([InlineKeyboardButton("🔙 Back", callback_data=f"pp_services:{provider_key}")])
+    await query.message.edit_text(
+        f"📱 **Service: {service.get('name', 'Unnamed')}**\n\n"
+        f"Countries: `{len(countries)}`\n\nএকাধিক country যোগ করা যাবে।",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def render_provider_country(query, provider_key: str, service_index: int, country_index: int):
+    cfg = await get_provider_config(provider_key)
+    services = cfg.get("services", [])
+    try:
+        service = services[service_index]
+        country = service.get("countries", [])[country_index]
+    except (IndexError, KeyError, TypeError):
+        await query.answer("❌ Country পাওয়া যায়নি", show_alert=True)
+        return
+    ranges = country.get("ranges", [])
+    rows = []
+    for ri, value in enumerate(ranges):
+        rows.append([InlineKeyboardButton(f"📡 {value}", callback_data="pp_noop")])
+    rows.append([InlineKeyboardButton("➕ Add Range", callback_data=f"pp_addrange:{provider_key}:{service_index}:{country_index}")])
+    rows.append([InlineKeyboardButton("🗑 Delete Entire Country", callback_data=f"pp_delcountry:{provider_key}:{service_index}:{country_index}")])
+    rows.append([InlineKeyboardButton("🔙 Back", callback_data=f"pp_service:{provider_key}:{service_index}")])
+    await query.message.edit_text(
+        f"🌍 **Country: {country.get('name', 'Unknown')}**\n\n"
+        f"Ranges: `{len(ranges)}`\n\n"
+        "Range এখানে configuration হিসেবে সংরক্ষণ করা হবে।",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def handle_provider_callback(query, user_id: int) -> bool:
+    """Handle safe provider-panel UI callbacks."""
+    data = query.data or ""
+    if not (data.startswith("pp_") or data in {"stex_control", "voltx_control", "zenex_control", "ye_control"}):
+        return False
+    if not await is_admin(user_id):
+        await query.answer("❌ Admin only", show_alert=True)
+        return True
+
+    if data.endswith("_control") and data.split("_")[0] in PROVIDER_DEFINITIONS:
+        provider_key = data.split("_")[0]
+        await query.answer()
+        await render_provider_panel(query, provider_key)
+        return True
+
+    if data == "pp_noop":
+        await query.answer("🔐 Value hidden")
+        return True
+
+    if data == "pp_root":
+        await query.answer()
+        await query.message.edit_text("⚙️ **System Control Hub**\n\nএকটি provider নির্বাচন করুন:", parse_mode="Markdown", reply_markup=provider_root_markup())
+        return True
+
+    if data.startswith("pp_addkey:"):
+        provider_key = data.split(":", 1)[1]
+        PROVIDER_PANEL_STATE[user_id] = {"step": "api_key", "provider": provider_key}
+        await query.answer()
+        await query.message.edit_text(
+            f"🔑 **{PROVIDER_DEFINITIONS[provider_key]} — Add API Key**\n\n"
+            "API key পাঠান।\n"
+            "উদাহরণ: `MIUOAJ8WTEJ` বা `MURAD_43122558F7FE7B6C79B419C2`",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data=f"{provider_key}_control")]])
+        )
+        return True
+
+    if data.startswith("pp_keys:"):
+        provider_key = data.split(":", 1)[1]
+        await query.answer()
+        await render_provider_keys(query, provider_key)
+        return True
+
+    if data.startswith("pp_delkey:"):
+        _, provider_key, idx_s = data.split(":")
+        idx = int(idx_s)
+        cfg = await get_provider_config(provider_key)
+        keys = cfg.get("api_keys", [])
+        if 0 <= idx < len(keys):
+            keys.pop(idx)
+            await provider_panel_col.update_one({"provider": provider_key}, {"$set": {"api_keys": keys}})
+        await query.answer("✅ API key deleted")
+        await render_provider_keys(query, provider_key)
+        return True
+
+    if data.startswith("pp_services:"):
+        provider_key = data.split(":", 1)[1]
+        await query.answer()
+        await render_provider_services(query, provider_key)
+        return True
+
+    if data.startswith("pp_addservice:"):
+        provider_key = data.split(":", 1)[1]
+        PROVIDER_PANEL_STATE[user_id] = {"step": "service", "provider": provider_key}
+        await query.answer()
+        await query.message.edit_text(
+            "📱 **Service Name লিখুন**\n\nউদাহরণ: Facebook, Telegram, WhatsApp, IMO",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data=f"pp_services:{provider_key}")]])
+        )
+        return True
+
+    if data.startswith("pp_service:"):
+        _, provider_key, idx_s = data.split(":")
+        await query.answer()
+        await render_provider_service(query, provider_key, int(idx_s))
+        return True
+
+    if data.startswith("pp_delservice:"):
+        _, provider_key, idx_s = data.split(":")
+        idx = int(idx_s)
+        cfg = await get_provider_config(provider_key)
+        services = cfg.get("services", [])
+        if 0 <= idx < len(services):
+            services.pop(idx)
+            await provider_panel_col.update_one({"provider": provider_key}, {"$set": {"services": services}})
+        await query.answer("✅ Service deleted")
+        await render_provider_services(query, provider_key)
+        return True
+
+    if data.startswith("pp_addcountry:"):
+        _, provider_key, si_s = data.split(":")
+        PROVIDER_PANEL_STATE[user_id] = {"step": "country", "provider": provider_key, "service_index": int(si_s)}
+        await query.answer()
+        await query.message.edit_text(
+            "🌍 **Country Name লিখুন**\n\nউদাহরণ: Bangladesh, India, Guinea",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data=f"pp_service:{provider_key}:{int(si_s)}")]])
+        )
+        return True
+
+    if data.startswith("pp_country:"):
+        _, provider_key, si_s, ci_s = data.split(":")
+        await query.answer()
+        await render_provider_country(query, provider_key, int(si_s), int(ci_s))
+        return True
+
+    if data.startswith("pp_delcountry:"):
+        _, provider_key, si_s, ci_s = data.split(":")
+        si, ci = int(si_s), int(ci_s)
+        cfg = await get_provider_config(provider_key)
+        services = cfg.get("services", [])
+        try:
+            services[si].get("countries", []).pop(ci)
+        except (IndexError, KeyError, TypeError):
+            await query.answer("❌ Country পাওয়া যায়নি", show_alert=True)
+            return True
+        await provider_panel_col.update_one({"provider": provider_key}, {"$set": {"services": services}})
+        await query.answer("✅ Country deleted")
+        await render_provider_service(query, provider_key, si)
+        return True
+
+    if data.startswith("pp_addrange:"):
+        _, provider_key, si_s, ci_s = data.split(":")
+        PROVIDER_PANEL_STATE[user_id] = {
+            "step": "range", "provider": provider_key,
+            "service_index": int(si_s), "country_index": int(ci_s)
+        }
+        await query.answer()
+        await query.message.edit_text(
+            "📡 **Range লিখুন**\n\nউদাহরণ: `+88017`\n\n"
+            "⚠️ Range শুধু configuration হিসেবে সংরক্ষণ হবে; live number/OTP routing চালু নেই।",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data=f"pp_country:{provider_key}:{int(si_s)}:{int(ci_s)}")]])
+        )
+        return True
+
+    if data.startswith("pp_searchcountry:"):
+        provider_key = data.split(":", 1)[1]
+        PROVIDER_PANEL_STATE[user_id] = {"step": "country_search", "provider": provider_key}
+        await query.answer()
+        await query.message.edit_text(
+            f"🌍 **Search Country — {PROVIDER_DEFINITIONS[provider_key]}**\n\nCountry name লিখুন।",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=f"{provider_key}_control")]])
+        )
+        return True
+
+    return True
+
+
+async def handle_provider_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Handle text input for safe provider configuration states."""
+    user_id = update.effective_user.id
+    state = PROVIDER_PANEL_STATE.get(user_id)
+    if not state or not await is_admin(user_id):
+        return False
+    text = (update.message.text or "").strip()
+    if not text:
+        return True
+    provider_key = state["provider"]
+
+    if state["step"] == "api_key":
+        if len(text) < 4 or len(text) > 300:
+            await update.message.reply_text("❌ API key format ঠিক নয়।")
+            return True
+        cfg = await get_provider_config(provider_key)
+        keys = cfg.get("api_keys", [])
+        if text not in keys:
+            keys.append(text)
+            await provider_panel_col.update_one({"provider": provider_key}, {"$set": {"api_keys": keys}})
+        PROVIDER_PANEL_STATE.pop(user_id, None)
+        await update.message.reply_text(f"✅ {PROVIDER_DEFINITIONS[provider_key]} API key saved.\nℹ️ এই build-এ এটি live API-তে call করা হচ্ছে না।")
+        return True
+
+    if state["step"] == "service":
+        if len(text) > 80:
+            await update.message.reply_text("❌ Service name অনেক বড়।")
+            return True
+        cfg = await get_provider_config(provider_key)
+        services = cfg.get("services", [])
+        services.append({"name": text, "countries": []})
+        await provider_panel_col.update_one({"provider": provider_key}, {"$set": {"services": services}})
+        PROVIDER_PANEL_STATE.pop(user_id, None)
+        await update.message.reply_text(f"✅ Service added: {text}")
+        return True
+
+    if state["step"] == "country":
+        if len(text) > 80:
+            await update.message.reply_text("❌ Country name অনেক বড়।")
+            return True
+        cfg = await get_provider_config(provider_key)
+        services = cfg.get("services", [])
+        si = state["service_index"]
+        try:
+            services[si].setdefault("countries", []).append({"name": text, "ranges": []})
+        except (IndexError, KeyError):
+            PROVIDER_PANEL_STATE.pop(user_id, None)
+            await update.message.reply_text("❌ Service পাওয়া যায়নি।")
+            return True
+        await provider_panel_col.update_one({"provider": provider_key}, {"$set": {"services": services}})
+        PROVIDER_PANEL_STATE.pop(user_id, None)
+        await update.message.reply_text(f"✅ Country added: {text}")
+        return True
+
+    if state["step"] == "range":
+        if len(text) > 100:
+            await update.message.reply_text("❌ Range অনেক বড়।")
+            return True
+        cfg = await get_provider_config(provider_key)
+        services = cfg.get("services", [])
+        si, ci = state["service_index"], state["country_index"]
+        try:
+            ranges = services[si]["countries"][ci].setdefault("ranges", [])
+        except (IndexError, KeyError, TypeError):
+            PROVIDER_PANEL_STATE.pop(user_id, None)
+            await update.message.reply_text("❌ Country পাওয়া যায়নি।")
+            return True
+        if text not in ranges:
+            ranges.append(text)
+        await provider_panel_col.update_one({"provider": provider_key}, {"$set": {"services": services}})
+        PROVIDER_PANEL_STATE.pop(user_id, None)
+        await update.message.reply_text("✅ Range saved as configuration. Live number/OTP routing is disabled in this build.")
+        return True
+
+    if state["step"] == "country_search":
+        cfg = await get_provider_config(provider_key)
+        needle = text.casefold()
+        rows = []
+        for si, service in enumerate(cfg.get("services", [])):
+            for ci, country in enumerate(service.get("countries", [])):
+                if needle in country.get("name", "").casefold():
+                    rows.append([InlineKeyboardButton(
+                        f"🌍 {service.get('name')} / {country.get('name')}",
+                        callback_data=f"pp_country:{provider_key}:{si}:{ci}"
+                    )])
+        rows.append([InlineKeyboardButton("🔙 Back", callback_data=f"{provider_key}_control")])
+        PROVIDER_PANEL_STATE.pop(user_id, None)
+        await update.message.reply_text(
+            f"🔎 Search results for `{text}`:", parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return True
+
+    return False
+
+
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
+
+    # Safe provider panel configuration handlers
+    if await handle_provider_callback(query, user_id):
+        return
 
     if query.data == "check_join":
         is_joined = await check_force_join(user_id, context)
@@ -1143,6 +1532,22 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await query.message.edit_text(balance_text, parse_mode="Markdown", reply_markup=keyboard)
 
+    elif query.data.startswith("demo_provider:"):
+        await query.answer()
+        provider_key = query.data.split(":", 1)[1]
+        provider_name = PROVIDER_DEFINITIONS.get(provider_key, "Provider")
+        cfg = await get_provider_config(provider_key)
+        services = [x.get("name") for x in cfg.get("services", []) if x.get("name")]
+        rows = [[InlineKeyboardButton(f"📱 {name}", callback_data="pp_noop") for name in services[:2]]]
+        rows = [r for r in rows if r]
+        rows.append([InlineKeyboardButton("🔙 Back", callback_data="back_to_main_menu")])
+        await query.message.edit_text(
+            f"🔤 **{provider_name[0]} — {provider_name}**\n\n"
+            f"Configured services: `{len(services)}`\n\n"
+            "⚠️ Live number allocation এবং OTP handling এই build-এ disabled।",
+            parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows)
+        )
+
     elif query.data == "get_number_menu":
         await query.answer()
         services = await numbers_col.distinct("service_name", {"status": "Available"})
@@ -1365,6 +1770,10 @@ async def otp_group_listener(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text if update.message.text else ""
+
+    # Safe provider configuration input handler
+    if await handle_provider_text(update, context):
+        return
 
     await users_col.update_one(
         {"user_id": user_id},
@@ -1994,13 +2403,33 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
         
     elif text == btn_get_num:
-        services = await numbers_col.distinct("service_name", {"status": "Available"})
-        if services:
-            keyboard = [[InlineKeyboardButton(f"📱 {s}", callback_data=f"sel_serv:{s}")] for s in services]
+        # Safe provider selector: only configured provider initials are shown here.
+        configured = []
+        for provider_key, provider_name in PROVIDER_DEFINITIONS.items():
+            cfg = await provider_panel_col.find_one({"provider": provider_key})
+            if cfg and cfg.get("services"):
+                configured.append((provider_key, provider_name))
+
+        if configured:
+            keyboard = [[
+                InlineKeyboardButton(provider_name[0], callback_data=f"demo_provider:{provider_key}")
+                for provider_key, provider_name in configured
+            ]]
             keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_main_menu")])
-            await update.message.reply_text("📱 **Select a Service:**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+            await update.message.reply_text(
+                "📱 **Select Provider:**\n\n"
+                "Provider-এর প্রথম অক্ষর দেখানো হচ্ছে।\n"
+                "ℹ️ এই build-এ live number allocation/API/OTP routing চালু নেই.",
+                parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard)
+            )
         else:
-            await update.message.reply_text("⚠️ বর্তমানে কোনো নাম্বার স্টক এ নেই!", parse_mode="Markdown")
+            services = await numbers_col.distinct("service_name", {"status": "Available"})
+            if services:
+                keyboard = [[InlineKeyboardButton(f"📱 {s}", callback_data=f"sel_serv:{s}")] for s in services]
+                keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_main_menu")])
+                await update.message.reply_text("📱 **Select a Service:**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+            else:
+                await update.message.reply_text("⚠️ বর্তমানে কোনো নাম্বার স্টক এ নেই!", parse_mode="Markdown")
         
     elif text == btn_search_num:
         USER_SEARCH_STATE[user_id] = True
