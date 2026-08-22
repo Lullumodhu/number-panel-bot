@@ -33,7 +33,7 @@ withdrawals_col = db.withdrawals
 admins_col = db.admins
 channels_col = db.channels
 forward_groups_col = db.forward_groups
-ranax_groups_col = db.ranax_groups  # RanaX সোর্স গ্রুপগুলো সংরক্ষণের জন্য কালেকশন
+ranax_groups_col = db.ranax_groups
 
 # --- Permanent Links & Info ---
 MAIN_CHANNEL_URL = "https://t.me/Zentrix_Officiall"
@@ -55,8 +55,8 @@ CHANNEL_ADD_STATE = {}
 FORWARD_GROUP_ADD_STATE = {}
 USER_MANAGE_STATE = {}
 RANAX_ADD_STATE = {}
-MENU_EDIT_STATE = {}  # মেনু টেক্সট বা বাটন কাস্টমাইজেশনের জন্য স্টেট
-TEST_STATE = {}  # Admin-only OTP Group Test wizard
+MENU_EDIT_STATE = {}
+TEST_STATE = {}
 
 # --- Dynamic Settings Getter/Setter ---
 async def get_setting(key, default_val):
@@ -102,9 +102,8 @@ async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
             pass
     return True
 
-# --- Reply Keyboards (Normal Users - Dynamic Support) ---
+# --- Reply Keyboards ---
 async def main_menu_keyboard(user_id: int):
-    # ডায়নামিক নামগুলো ডাটাবেজ থেকে লোড করা হচ্ছে, না থাকলে ডিফল্ট নাম ব্যবহার হবে
     btn_get_num = await get_setting("btn_get_number", "📱 GET NUMBER")
     btn_search_num = await get_setting("btn_search_number", "🔎 SEARCH NUMBER")
     btn_traffic = await get_setting("btn_traffic", "🚦 TRAFFIC")
@@ -158,6 +157,118 @@ async def get_admin_panel_markup(user_id: int):
         [InlineKeyboardButton("📢 Broadcast", callback_data="adm_broadcast"), InlineKeyboardButton("❌ Close", callback_data="adm_close")]
     ]
     return panel_text, InlineKeyboardMarkup(keyboard)
+
+# --- Test OTP Helpers (Without TEST Tag in Feed Display) ---
+FALLBACK_COUNTRY_CODES = {
+    "880": "BD", "60": "MY", "62": "ID", "65": "SG", "66": "TH",
+    "84": "VN", "63": "PH", "91": "IN", "92": "PK", "93": "AF",
+    "94": "LK", "95": "MM", "98": "IR", "81": "JP", "82": "KR",
+    "86": "CN", "7": "RU", "90": "TR", "1": "US/CA", "44": "GB",
+    "33": "FR", "49": "DE", "39": "IT", "34": "ES", "31": "NL",
+    "32": "BE", "41": "CH", "43": "AT", "45": "DK", "46": "SE",
+    "47": "NO", "48": "PL", "30": "GR", "351": "PT", "353": "IE",
+    "358": "FI", "380": "UA", "420": "CZ", "36": "HU", "40": "RO",
+    "972": "IL", "971": "AE", "966": "SA", "974": "QA", "973": "BH",
+    "965": "KW", "968": "OM", "967": "YE", "962": "JO", "961": "LB",
+    "963": "SY", "964": "IQ", "20": "EG", "212": "MA", "213": "DZ",
+    "216": "TN", "218": "LY", "234": "NG", "254": "KE", "255": "TZ",
+    "256": "UG", "27": "ZA", "61": "AU", "64": "NZ",
+}
+
+def detect_test_country(phone: str) -> str:
+    raw = re.sub(r"[^\d+]", "", phone.strip())
+    if not raw.startswith("+"):
+        raw = "+" + raw
+
+    if phonenumbers is not None:
+        try:
+            parsed = phonenumbers.parse(raw, None)
+            region = geocoder.region_code_for_number(parsed)
+            if region:
+                return region.upper()
+        except Exception:
+            pass
+
+    digits = raw.lstrip("+")
+    for length in (3, 2, 1):
+        prefix = digits[:length]
+        if prefix in FALLBACK_COUNTRY_CODES:
+            return FALLBACK_COUNTRY_CODES[prefix]
+    return "UN"
+
+def country_flag(country: str) -> str:
+    country = (country or "UN").upper()
+    if len(country) != 2 or not country.isalpha():
+        return "🌍"
+    return "".join(chr(127397 + ord(c)) for c in country)
+
+def service_icon(service: str) -> str:
+    s = service.lower().replace("'", "").replace(" ", "")
+    icons = {
+        "whatsapp": "🟢", "facebook": "🔵", "telegram": "🔷",
+        "instagram": "🟣", "discord": "🟪", "imo": "🔵",
+        "google": "🔴", "tiktok": "⚫", "twitter": "🐦",
+    }
+    return icons.get(s, "📱")
+
+def mask_test_phone(phone: str) -> str:
+    if len(phone) <= 8:
+        return phone
+    return f"{phone[:5]}••{phone[-4:]}"
+
+async def build_test_otp_keyboard(context: ContextTypes.DEFAULT_TYPE, otp: str):
+    channel_url = await get_setting("otp_button_link", MAIN_CHANNEL_URL)
+    if not isinstance(channel_url, str) or not channel_url.startswith(("http://", "https://", "tg://")):
+        channel_url = MAIN_CHANNEL_URL
+
+    me = await context.bot.get_me()
+    bot_username = me.username or ""
+    get_number_url = f"https://t.me/{bot_username}?start=get_number" if bot_username else MAIN_CHANNEL_URL
+
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔔 Channel", url=channel_url),
+            InlineKeyboardButton(f"🛡️ 📋 {otp}", copy_text=CopyTextButton(text=otp)),
+        ],
+        [InlineKeyboardButton("📞 Get Number ↗", url=get_number_url)]
+    ])
+
+def build_test_otp_text(service: str, phone: str, otp: str, language: str, country: str) -> str:
+    # 'TEST' লেখাটি সম্পূর্ণ বাদ দিয়ে ফরম্যাট করা হয়েছে যাতে সাধারণ ব্যবহারকারীদের চোখে না পড়ে।
+    return (
+        f"{country_flag(country)} **{country}** | "
+        f"{service_icon(service)} **{service}** `{mask_test_phone(phone)}` | "
+        f"🔊 **{language}**\n\n"
+        f"🛡️ **OTP:** `{otp}`"
+    )
+
+async def send_test_otp_to_configured_groups(context: ContextTypes.DEFAULT_TYPE,
+                                             service: str, phone: str,
+                                             otp: str, language: str,
+                                             country: str):
+    groups = await forward_groups_col.find({}).to_list(length=50)
+    target_ids = [str(g.get("group_id")).strip() for g in groups if g.get("group_id")]
+    if not target_ids:
+        target_ids = [OTP_GROUP_URL]
+
+    payload = build_test_otp_text(service, phone, otp, language, country)
+    reply_markup = await build_test_otp_keyboard(context, otp)
+    success = 0
+    failed = 0
+
+    for target_id in target_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text=payload,
+                parse_mode="Markdown",
+                reply_markup=reply_markup
+            )
+            success += 1
+        except Exception:
+            failed += 1
+
+    return success, failed, len(target_ids)
 
 # --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -249,121 +360,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=reply_markup)
 
 
-# --- Admin OTP Group Test Helpers ---
-FALLBACK_COUNTRY_CODES = {
-    "880": "BD", "60": "MY", "62": "ID", "65": "SG", "66": "TH",
-    "84": "VN", "63": "PH", "91": "IN", "92": "PK", "93": "AF",
-    "94": "LK", "95": "MM", "98": "IR", "81": "JP", "82": "KR",
-    "86": "CN", "7": "RU", "90": "TR", "1": "US/CA", "44": "GB",
-    "33": "FR", "49": "DE", "39": "IT", "34": "ES", "31": "NL",
-    "32": "BE", "41": "CH", "43": "AT", "45": "DK", "46": "SE",
-    "47": "NO", "48": "PL", "30": "GR", "351": "PT", "353": "IE",
-    "358": "FI", "380": "UA", "420": "CZ", "36": "HU", "40": "RO",
-    "972": "IL", "971": "AE", "966": "SA", "974": "QA", "973": "BH",
-    "965": "KW", "968": "OM", "967": "YE", "962": "JO", "961": "LB",
-    "963": "SY", "964": "IQ", "20": "EG", "212": "MA", "213": "DZ",
-    "216": "TN", "218": "LY", "234": "NG", "254": "KE", "255": "TZ",
-    "256": "UG", "27": "ZA", "61": "AU", "64": "NZ",
-}
-
-def detect_test_country(phone: str) -> str:
-    raw = re.sub(r"[^\d+]", "", phone.strip())
-    if not raw.startswith("+"):
-        raw = "+" + raw
-
-    if phonenumbers is not None:
-        try:
-            parsed = phonenumbers.parse(raw, None)
-            region = geocoder.region_code_for_number(parsed)
-            if region:
-                return region.upper()
-        except Exception:
-            pass
-
-    digits = raw.lstrip("+")
-    for length in (3, 2, 1):
-        prefix = digits[:length]
-        if prefix in FALLBACK_COUNTRY_CODES:
-            return FALLBACK_COUNTRY_CODES[prefix]
-    return "UN"
-
-def country_flag(country: str) -> str:
-    country = (country or "UN").upper()
-    if len(country) != 2 or not country.isalpha():
-        return "🌍"
-    return "".join(chr(127397 + ord(c)) for c in country)
-
-def service_icon(service: str) -> str:
-    s = service.lower().replace("'", "").replace(" ", "")
-    icons = {
-        "whatsapp": "🟢", "facebook": "🔵", "telegram": "🔷",
-        "instagram": "🟣", "discord": "🟪", "imo": "🔵",
-        "google": "🔴", "tiktok": "⚫", "twitter": "🐦",
-    }
-    return icons.get(s, "📱")
-
-def mask_test_phone(phone: str) -> str:
-    # Keep the same compact visual style as the reference OTP group.
-    if len(phone) <= 8:
-        return phone
-    return f"{phone[:5]}••{phone[-4:]}"
-
-async def build_test_otp_keyboard(context: ContextTypes.DEFAULT_TYPE, otp: str):
-    # Channel URL can be changed from OTP Group Management; fallback is the main channel.
-    channel_url = await get_setting("otp_button_link", MAIN_CHANNEL_URL)
-    if not isinstance(channel_url, str) or not channel_url.startswith(("http://", "https://", "tg://")):
-        channel_url = MAIN_CHANNEL_URL
-
-    me = await context.bot.get_me()
-    bot_username = me.username or ""
-    get_number_url = f"https://t.me/{bot_username}?start=get_number" if bot_username else MAIN_CHANNEL_URL
-
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🔔 Channel", url=channel_url),
-            InlineKeyboardButton(f"🛡️ 📋 {otp}", copy_text=CopyTextButton(text=otp)),
-        ],
-        [InlineKeyboardButton("📞 Get Number ↗", url=get_number_url)]
-    ])
-
-def build_test_otp_text(service: str, phone: str, otp: str, language: str, country: str) -> str:
-    # Keep the visual layout close to the normal OTP feed, but retain a clear
-    # synthetic-test marker so a test OTP is not mistaken for a real OTP.
-    return (
-        f"🧪 **TEST**  {country_flag(country)} **{country}** | "
-        f"{service_icon(service)} **{service}** `{mask_test_phone(phone)}` | "
-        f"🔊 **{language}**\n\n"
-        f"🛡️ **OTP:** `{otp}`"
-    )
-
-async def send_test_otp_to_configured_groups(context: ContextTypes.DEFAULT_TYPE,
-                                             service: str, phone: str,
-                                             otp: str, language: str,
-                                             country: str):
-    groups = await forward_groups_col.find({}).to_list(length=50)
-    target_ids = [str(g.get("group_id")).strip() for g in groups if g.get("group_id")]
-    if not target_ids:
-        target_ids = [OTP_GROUP_URL]
-
-    payload = build_test_otp_text(service, phone, otp, language, country)
-    reply_markup = await build_test_otp_keyboard(context, otp)
-    success = 0
-    failed = 0
-
-    for target_id in target_ids:
-        try:
-            await context.bot.send_message(
-                chat_id=target_id,
-                text=payload,
-                parse_mode="Markdown",
-                reply_markup=reply_markup
-            )
-            success += 1
-        except Exception:
-            failed += 1
-
-    return success, failed, len(target_ids)
-
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
@@ -416,7 +412,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         TEST_STATE[user_id] = {"step": "GET_SERVICE"}
         await query.message.edit_text(
             "🧪 **OTP Group Test**\n\n"
-            "প্রথমে যে **Service** টেস্ট করতে চান তার নাম লিখুন।\n"
+            "প্রথমে যে **Service** টেস্ট করতে চান তার নাম লিখুন。\n"
             "উদাহরণ: `Facebook` / `WhatsApp`",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
@@ -469,7 +465,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]}})
         await query.answer("✅ সকল মেনু এবং বাটন ডিফল্ট সেটিংয়ে ফিরিয়ে আনা হয়েছে!", show_alert=True)
         
-        # রিফ্রেশ মেনু ডিজাইন প্যানেল
         menu_text = f"🎨 **Menu & Button Customization Hub**\n\nবটের স্টার্ট মেসেজ এবং রিপ্লাই বাটনগুলোর নাম এখান থেকে আপনার পছন্দমতো পরিবর্তন করতে পারবেন।"
         menu_keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("✏️ Edit Start Menu", callback_data="m_edit_start"), InlineKeyboardButton("✏️ Edit GET NUMBER", callback_data="m_edit_get")],
@@ -983,7 +978,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("🔄 ট্রাফিক রিফ্রেশ করা হয়েছে!")
         traffic_list = await traffic_col.find({}).to_list(length=100)
         if not traffic_list:
-            text = "📊 বর্তমানে কোনো ট্রাফিক আপডেট নেই।"
+            text = "📊 বর্তমানে কোনো ট্রাফিক আপডেট নেই。"
         else:
             text = "🚦 **1 HOUR LIVE TRAFFIC**\n\n"
             for item in traffic_list:
@@ -1406,7 +1401,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- Admin OTP Group Test State Handler ---
+    # --- Admin OTP Group Test State Handler (Without TEST indicator) ---
     if await is_admin(user_id) and user_id in TEST_STATE:
         state = TEST_STATE[user_id]
         step = state.get("step")
@@ -1423,7 +1418,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state["step"] = "GET_NUMBER"
             TEST_STATE[user_id] = state
             await update.message.reply_text(
-                "📞 এবার **Phone Number** লিখুন।\n\n"
+                "📞 এবার **Phone Number** লিখুন。\n\n"
                 "উদাহরণ: `+601862810138`",
                 parse_mode="Markdown",
                 reply_markup=back_keyboard()
@@ -1447,8 +1442,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             TEST_STATE[user_id] = state
             await update.message.reply_text(
                 "🌍 এবার **Country Short Code** লিখুন।\n\n"
-                "শুধু 2টি অক্ষর দিন — যেমন: `MY`, `BD`, `ID`, `FR`, `US`\n"
-                "এই code-টাই OTP গ্রুপে country হিসেবে দেখাবে।",
+                "শুধু 2টি অক্ষর দিন — যেমন: `MY`, `BD`, `ID`, `FR`, `US`",
                 parse_mode="Markdown",
                 reply_markup=back_keyboard()
             )
@@ -1470,7 +1464,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             TEST_STATE[user_id] = state
             await update.message.reply_text(
                 f"🌍 Country: `{country}`\n\n"
-                "🔐 এবার **OTP Code** লিখুন।\n"
+                "🔐 এবার **OTP Code** লিখুন。\n"
                 "উদাহরণ: `054627`",
                 parse_mode="Markdown",
                 reply_markup=back_keyboard()
@@ -1492,7 +1486,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state["step"] = "GET_LANGUAGE"
             TEST_STATE[user_id] = state
             await update.message.reply_text(
-                "🌐 এবার **Language Code** লিখুন।\n\n"
+                "🌐 এবার **Language Code** লিখুন。\n\n"
                 "শুধু 2টি অক্ষর দিন, যেমন: `EN`, `FR`, `ID`",
                 parse_mode="Markdown",
                 reply_markup=back_keyboard()
@@ -1524,7 +1518,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context, service, phone, otp, language, country
             )
 
-            # Show the exact same test rendering in the admin chat as well.
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
@@ -1668,7 +1661,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         u_id = target_user["user_id"]
         if action == "balance":
             USER_MANAGE_STATE[user_id] = {"action": "do_balance", "target_id": u_id}
-            await update.message.reply_text(f"👤 User: `{u_id}`\n বর্তমান ব্যালেন্স: `{target_user.get('balance', 0.0)}৳`\n\nনতুন ব্যালেন্স অ্যামাউন্ট বা পরিবর্তন করার পরিমাণ (যেমন `+50` বা `200`) লিখে পাঠান:")
+            await update.message.reply_text(f"👤 User: `{u_id}`\n বর্তমান ব্যালেন্স: `{target_user.get('balance', 0.0)}৳`\n\nনতুন ব্যালেন্স অ্যামাউন্ট বা পরিবর্তন করার পরিমাণ লিখে পাঠান:")
             return
         elif action == "ban":
             current_ban = target_user.get("banned", False)
@@ -1798,7 +1791,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state["step"] = "GET_AMOUNT"
             USER_WITHDRAW_STATE[user_id] = state
             await update.message.reply_text(
-                "💰 আপনি কত টাকা উইথড্র করতে চান সেই অ্যামাউন্ট লিখে পাঠান (যেমন: `100` বা `500`):",
+                "💰 আপনি কত টাকা উইথড্র করতে চান সেই অ্যামাউন্ট লিখে পাঠান:",
                 parse_mode="Markdown",
                 reply_markup=back_keyboard()
             )
@@ -1982,7 +1975,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(success_text, parse_mode="Markdown", reply_markup=success_keyboard)
             return
 
-    # ডায়নামিক বাটন লেবেলের চেক
     btn_get_num = await get_setting("btn_get_number", "📱 GET NUMBER")
     btn_search_num = await get_setting("btn_search_number", "🔎 SEARCH NUMBER")
     btn_traffic = await get_setting("btn_traffic", "🚦 TRAFFIC")
