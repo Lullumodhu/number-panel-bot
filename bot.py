@@ -1699,7 +1699,7 @@ async def main():
     application.add_handler(MessageHandler(filters.Document.ALL, message_handler))
     
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, otp_group_listener))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.SUPERGROUPS, otp_group_listener))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.SUPERGROUP, otp_group_listener))
 
     print("Zentrix Bot with RanaX Auto-Forwarder is running successfully...")
     
