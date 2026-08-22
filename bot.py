@@ -287,14 +287,53 @@ def detect_test_country(phone: str) -> str:
             return FALLBACK_COUNTRY_CODES[prefix]
     return "UN"
 
+def country_flag(country: str) -> str:
+    country = (country or "UN").upper()
+    if len(country) != 2 or not country.isalpha():
+        return "🌍"
+    return "".join(chr(127397 + ord(c)) for c in country)
+
+def service_icon(service: str) -> str:
+    s = service.lower().replace("'", "").replace(" ", "")
+    icons = {
+        "whatsapp": "🟢", "facebook": "🔵", "telegram": "🔷",
+        "instagram": "🟣", "discord": "🟪", "imo": "🔵",
+        "google": "🔴", "tiktok": "⚫", "twitter": "🐦",
+    }
+    return icons.get(s, "📱")
+
+def mask_test_phone(phone: str) -> str:
+    # Keep the same compact visual style as the reference OTP group.
+    if len(phone) <= 8:
+        return phone
+    return f"{phone[:5]}••{phone[-4:]}"
+
+async def build_test_otp_keyboard(context: ContextTypes.DEFAULT_TYPE, otp: str):
+    # Channel URL can be changed from OTP Group Management; fallback is the main channel.
+    channel_url = await get_setting("otp_button_link", MAIN_CHANNEL_URL)
+    if not isinstance(channel_url, str) or not channel_url.startswith(("http://", "https://", "tg://")):
+        channel_url = MAIN_CHANNEL_URL
+
+    me = await context.bot.get_me()
+    bot_username = me.username or ""
+    get_number_url = f"https://t.me/{bot_username}?start=get_number" if bot_username else MAIN_CHANNEL_URL
+
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔔 Channel", url=channel_url),
+            InlineKeyboardButton(f"🛡️ 📋 {otp}", copy_text=CopyTextButton(text=otp)),
+        ],
+        [InlineKeyboardButton("📞 Get Number ↗", url=get_number_url)]
+    ])
+
 def build_test_otp_text(service: str, phone: str, otp: str, language: str, country: str) -> str:
+    # Keep the visual layout close to the normal OTP feed, but retain a clear
+    # synthetic-test marker so a test OTP is not mistaken for a real OTP.
     return (
-        "🧪 **TEST OTP**\n\n"
-        f"📱 **Service:** `{service}`\n"
-        f"📞 **Number:** `{phone}`\n"
-        f"🌍 **Country:** `{country}`\n"
-        f"🔐 **OTP:** `{otp}`\n"
-        f"🌐 **Language:** `{language}`"
+        f"🧪 **TEST**  {country_flag(country)} **{country}** | "
+        f"{service_icon(service)} **{service}** `{mask_test_phone(phone)}` | "
+        f"🔊 **{language}**\n\n"
+        f"🛡️ **OTP:** `{otp}`"
     )
 
 async def send_test_otp_to_configured_groups(context: ContextTypes.DEFAULT_TYPE,
@@ -307,6 +346,7 @@ async def send_test_otp_to_configured_groups(context: ContextTypes.DEFAULT_TYPE,
         target_ids = [OTP_GROUP_URL]
 
     payload = build_test_otp_text(service, phone, otp, language, country)
+    reply_markup = await build_test_otp_keyboard(context, otp)
     success = 0
     failed = 0
 
@@ -315,7 +355,8 @@ async def send_test_otp_to_configured_groups(context: ContextTypes.DEFAULT_TYPE,
             await context.bot.send_message(
                 chat_id=target_id,
                 text=payload,
-                parse_mode="Markdown"
+                parse_mode="Markdown",
+                reply_markup=reply_markup
             )
             success += 1
         except Exception:
@@ -1401,13 +1442,34 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
-            country = detect_test_country(normalized)
             state["phone"] = normalized
+            state["step"] = "GET_COUNTRY"
+            TEST_STATE[user_id] = state
+            await update.message.reply_text(
+                "🌍 এবার **Country Short Code** লিখুন।\n\n"
+                "শুধু 2টি অক্ষর দিন — যেমন: `MY`, `BD`, `ID`, `FR`, `US`\n"
+                "এই code-টাই OTP গ্রুপে country হিসেবে দেখাবে।",
+                parse_mode="Markdown",
+                reply_markup=back_keyboard()
+            )
+            return
+
+        elif step == "GET_COUNTRY":
+            country = text.strip().upper()
+            if not re.fullmatch(r"[A-Z]{2}", country):
+                await update.message.reply_text(
+                    "❌ Country Short Code অবশ্যই 2টি ইংরেজি অক্ষর হতে হবে।\n"
+                    "উদাহরণ: `MY` / `BD` / `ID`",
+                    parse_mode="Markdown",
+                    reply_markup=back_keyboard()
+                )
+                return
+
             state["country"] = country
             state["step"] = "GET_OTP"
             TEST_STATE[user_id] = state
             await update.message.reply_text(
-                f"🌍 **Detected Country:** `{country}`\n\n"
+                f"🌍 Country: `{country}`\n\n"
                 "🔐 এবার **OTP Code** লিখুন।\n"
                 "উদাহরণ: `054627`",
                 parse_mode="Markdown",
@@ -1461,6 +1523,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             success, failed, total = await send_test_otp_to_configured_groups(
                 context, service, phone, otp, language, country
             )
+
+            # Show the exact same test rendering in the admin chat as well.
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=build_test_otp_text(service, phone, otp, language, country),
+                    parse_mode="Markdown",
+                    reply_markup=await build_test_otp_keyboard(context, otp)
+                )
+            except Exception:
+                pass
 
             result_text = (
                 "🧪 **OTP Group Test Complete**\n\n"
