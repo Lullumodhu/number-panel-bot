@@ -212,15 +212,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    welcome_text = (
-        f"🌐 **NUMBER PANEL**\n\n"
-        f"👋 Welcome, **{user.first_name}**\n"
-        f"🚀 Premium Number Management System\n\n"
-        f"📱 Manage your available numbers\n"
-        f"🌍 Browse services & countries\n"
-        f"💰 Balance & referral management\n\n"
-        f"⚡ Fast • Simple • Secure"
-    )
+    # ডাটাবেজ থেকে ওয়েলকাম বা মেনু টেক্সট রিড করা (যদি থাকে)
+    custom_welcome = await get_setting("welcome_text", None)
+    if custom_welcome:
+        welcome_text = custom_welcome
+    else:
+        welcome_text = (
+            f"🌐 **NUMBER PANEL**\n\n"
+            f"👋 Welcome, **{user.first_name}**\n"
+            f"🚀 Premium Number Management System\n\n"
+            f"📱 Manage your available numbers\n"
+            f"🌍 Browse services & countries\n"
+            f"💰 Balance & referral management\n\n"
+            f"⚡ Fast • Simple • Secure"
+        )
     reply_markup = await build_main_menu(user.id)
     await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=reply_markup)
 
@@ -238,12 +243,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
                 
             user = query.from_user
-            welcome_text = (
-                f"🌐 **NUMBER PANEL**\n\n"
-                f"👋 Welcome, **{user.first_name}**\n"
-                f"🚀 Premium Number Management System\n\n"
-                f"⚡ Fast • Simple • Secure"
-            )
+            custom_welcome = await get_setting("welcome_text", None)
+            if custom_welcome:
+                welcome_text = custom_welcome
+            else:
+                welcome_text = (
+                    f"🌐 **NUMBER PANEL**\n\n"
+                    f"👋 Welcome, **{user.first_name}**\n"
+                    f"🚀 Premium Number Management System\n\n"
+                    f"⚡ Fast • Simple • Secure"
+                )
             reply_markup = await build_main_menu(user_id)
             await context.bot.send_message(chat_id=user_id, text=welcome_text, parse_mode="Markdown", reply_markup=reply_markup)
         else:
@@ -264,6 +273,64 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔙 Back", callback_data="adm_back")]
         ])
         await query.message.edit_text(sys_text, parse_mode="Markdown", reply_markup=sys_keyboard)
+
+    # --- 1. Menu Design Handler ---
+    elif query.data == "menu_design" and await is_admin(user_id):
+        await query.answer()
+        menu_text = (
+            "📱 **Menu Design Configuration**\n\n"
+            "বটের মেনু টেক্সট বা সেটিংস এখান থেকে কন্ট্রোল করুন:"
+        )
+        menu_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✏️ Edit Welcome Text", callback_data="md_edit_welcome")],
+            [InlineKeyboardButton("🔄 Reset Defaults", callback_data="md_reset_defaults")],
+            [InlineKeyboardButton("🔙 Back to System Hub", callback_data="adm_system_menu")]
+        ])
+        await query.message.edit_text(menu_text, parse_mode="Markdown", reply_markup=menu_keyboard)
+
+    elif query.data == "md_edit_welcome" and await is_admin(user_id):
+        await query.answer()
+        ADMIN_SETTINGS_STATE[user_id] = {"setting": "edit_welcome_text"}
+        await query.message.edit_text(
+            "✏️ নতুন ওয়েলকাম বা মেনু টেক্সট লিখে পাঠান:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="menu_design")]])
+        )
+
+    # --- 2. Reset Defaults Confirmation Keyboard ---
+    elif query.data == "md_reset_defaults" and await is_admin(user_id):
+        await query.answer()
+        confirm_keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Confirm", callback_data="md_reset_conf:yes"),
+                InlineKeyboardButton("❌ Cancel", callback_data="md_reset_conf:no")
+            ]
+        ])
+        await query.message.edit_text(
+            "⚠️ **Are you sure?**\n\nআপনি কি নিশ্চিত যে সমস্ত মেনু ডিজাইন এবং কাস্টম সেটিংস ডিফল্ট অবস্থায় রিসেট করতে চান?",
+            parse_mode="Markdown",
+            reply_markup=confirm_keyboard
+        )
+
+    elif query.data.startswith("md_reset_conf:") and await is_admin(user_id):
+        action = query.data.split(":", 1)[1]
+        if action == "yes":
+            await settings_col.delete_one({"_id": "welcome_text"})
+            await query.answer("✅ সফলভাবে ডিফল্ট কনফিগারেশনে রিসেট করা হয়েছে!", show_alert=True)
+        else:
+            await query.answer("❌ রিসেট অপারেশন বাতিল করা হয়েছে।", show_alert=True)
+        
+        # আবার মেনু ডিজাইন প্যানেলে ফিরিয়ে নেওয়া
+        menu_text = (
+            "📱 **Menu Design Configuration**\n\n"
+            "বটের মেনু টেক্সট বা সেটিংস এখান থেকে কন্ট্রোল করুন:"
+        )
+        menu_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✏️ Edit Welcome Text", callback_data="md_edit_welcome")],
+            [InlineKeyboardButton("🔄 Reset Defaults", callback_data="md_reset_defaults")],
+            [InlineKeyboardButton("🔙 Back to System Hub", callback_data="adm_system_menu")]
+        ])
+        await query.message.edit_text(menu_text, parse_mode="Markdown", reply_markup=menu_keyboard)
 
     # --- RanaX Custom OTP Source & ON/OFF Control Menu ---
     elif query.data == "ranax_control" and await is_admin(user_id):
@@ -303,7 +370,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await set_setting("ranax_status", val)
         await query.answer(f"RanaX System status updated to {val}!", show_alert=True)
         
-        # রিফ্রেশ RanaX প্যানেল
         ranax_status = val
         sources = await ranax_groups_col.find({}).to_list(length=50)
         text = f"🛡️ **RanaX Auto-OTP Forwarder Panel**\n\n⚡ System Status: `{ranax_status}`\n📌 সোর্স চ্যাট আইডি বা গ্রুপ লিস্ট নিচে দেওয়া হলো:"
@@ -336,7 +402,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await ranax_groups_col.delete_one({"chat_id": del_id})
         await query.answer("✅ Source Chat ID successfully removed!", show_alert=True)
         
-        # রিফ্রেশ RanaX প্যানেল
         ranax_status = await get_setting("ranax_status", "ON")
         sources = await ranax_groups_col.find({}).to_list(length=50)
         text = f"🛡️ **RanaX Auto-OTP Forwarder Panel**\n\n⚡ System Status: `{ranax_status}`\n📌 সোর্স চ্যাট আইডি বা গ্রুপ লিস্ট নিচে দেওয়া হলো:"
@@ -355,12 +420,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    # --- 1. Admin Management System ---
+    # --- অন্যান্য বাকি হ্যান্ডলারসমূহ অপরিবর্তিত রাখা হয়েছে ---
     elif query.data == "adm_mgmt_menu" and await is_admin(user_id):
         await query.answer()
         admins = await admins_col.find({}).to_list(length=100)
         text = f"👑 **Admin Management System**\n\nPrimary Owner ID: `{OWNER_ID}`\n\n**Current Admins:**"
-        
         keyboard = []
         if not admins:
             keyboard.append([InlineKeyboardButton("⚠️ কোনো সাব-এডমিন নেই", callback_data="noop")])
@@ -372,10 +436,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton(f"👤 {adm_name} (`{adm_id}`)", callback_data=f"noop_{adm_id}"),
                     InlineKeyboardButton("❌ রিমুভ", callback_data=f"adm_do_rem:{adm_id}")
                 ])
-
         keyboard.append([InlineKeyboardButton("➕ Add Admin", callback_data="adm_add_start")])
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
-        
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data == "adm_add_start" and user_id == OWNER_ID:
@@ -391,7 +453,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rem_id = int(query.data.split(":", 1)[1])
         await admins_col.delete_one({"user_id": rem_id})
         await query.answer(f"✅ Admin {rem_id} successfully removed!", show_alert=True)
-        
         admins = await admins_col.find({}).to_list(length=100)
         text = f"👑 **Admin Management System**\n\nPrimary Owner ID: `{OWNER_ID}`\n\n**Current Admins:**"
         keyboard = []
@@ -406,14 +467,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    # --- 2. Force Join System ---
     elif query.data == "adm_fj_menu" and await is_admin(user_id):
         await query.answer()
         fj_status = await get_setting("force_join_status", "ON")
         channels = await channels_col.find({}).to_list(length=50)
-        
         text = f"📢 **Force Join System Control**\n\nSTATUS: `{fj_status}`\n\n**Managed Channels:**"
-        
         keyboard = []
         if channels:
             for c in channels:
@@ -425,28 +483,24 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ])
         else:
             text += "\n⚠️ কোনো কাস্টম চ্যানেল যুক্ত করা হয়নি।"
-
         status_toggle_btn = "🔴 Turn OFF" if fj_status == "ON" else "🟢 Turn ON"
         toggle_val = "OFF" if fj_status == "ON" else "ON"
-
         keyboard.append([InlineKeyboardButton(status_toggle_btn, callback_data=f"set_fj:{toggle_val}")])
         keyboard.append([InlineKeyboardButton("➕ Add Channel", callback_data="fj_add_ch")])
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
-        
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data.startswith("set_fj:") and await is_admin(user_id):
         val = query.data.split(":", 1)[1]
         await set_setting("force_join_status", val)
         await query.answer(f"Force Join Status set to {val}!", show_alert=True)
-        
         fj_status = val
         channels = await channels_col.find({}).to_list(length=50)
         text = f"📢 **Force Join System Control**\n\nSTATUS: `{fj_status}`\n\n**Managed Channels:**"
         keyboard = []
         for c in channels:
             keyboard.append([
-                InlineKeyboardButton(f"📢 {c.get('name')} (`{c.get('chat_id')}`)", callback_data=f"noop"),
+                InlineKeyboardButton(f"📢 {c.get('name')} (`{c.get('chat_id')}`)", callback_data="noop"),
                 InlineKeyboardButton("🗑️ রিমুভ", callback_data=f"fj_do_del:{c.get('chat_id')}")
             ])
         status_toggle_btn = "🔴 Turn OFF" if fj_status == "ON" else "🟢 Turn ON"
@@ -469,7 +523,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id_to_del = query.data.split(":", 1)[1]
         await channels_col.delete_one({"chat_id": chat_id_to_del})
         await query.answer("✅ Channel successfully deleted!", show_alert=True)
-        
         fj_status = await get_setting("force_join_status", "ON")
         channels = await channels_col.find({}).to_list(length=50)
         text = f"📢 **Force Join System Control**\n\nSTATUS: `{fj_status}`\n\n**Managed Channels:**"
@@ -486,13 +539,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    # --- 3. User Management & Analytics ---
     elif query.data == "adm_usermgmt_menu" and await is_admin(user_id):
         await query.answer()
         total_u = await users_col.count_documents({})
         verified_u = await users_col.count_documents({"balance": {"$gt": 0.0}})
         banned_u = await users_col.count_documents({"banned": True})
-
         text = (
             f"👥 **User Management & Analytics**\n\n"
             f"📊 **Live Statistics:**\n"
@@ -522,12 +573,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         USER_MANAGE_STATE[user_id] = {"action": "profile"}
         await query.message.edit_text("👤 ইউজারের ফুল ডিটেইলস দেখতে তার **Chat ID** বা **Username** লিখে পাঠান:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_usermgmt_menu")]]))
 
-    # --- 4. OTP Group Management ---
     elif query.data == "adm_otpgroup_menu" and await is_admin(user_id):
         await query.answer()
         groups = await forward_groups_col.find({}).to_list(length=50)
         text = f"💬 **OTP Group Management**\n\n**Configured Forward Groups:**"
-        
         keyboard = []
         if groups:
             for g in groups:
@@ -539,11 +588,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ])
         else:
             text += "\n⚠️ কোনো ফরওয়ার্ড গ্রুপ সেট করা হয়নি।"
-
         keyboard.append([InlineKeyboardButton("✏️ Edit OTP Button Link", callback_data="ot_edit_link")])
         keyboard.append([InlineKeyboardButton("➕ Add Forward Group", callback_data="ot_add_group")])
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
-        
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data == "ot_edit_link" and await is_admin(user_id):
@@ -560,7 +607,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         gid = query.data.split(":", 1)[1]
         await forward_groups_col.delete_one({"group_id": gid})
         await query.answer("✅ Group successfully deleted!", show_alert=True)
-        
         groups = await forward_groups_col.find({}).to_list(length=50)
         text = f"💬 **OTP Group Management**\n\n**Configured Forward Groups:**"
         keyboard = []
@@ -574,7 +620,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    # --- 5. X-Rony Control Panel ---
     elif query.data == "adm_xrony_menu" and await is_admin(user_id):
         await query.answer()
         wd_status = await get_setting("withdraw_global_status", "ON")
@@ -583,7 +628,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         otp_rate = await get_setting("otp_rate", 0.60)
         num_req = await get_setting("num_request_count", 2)
         cooldown = await get_setting("cooldown_timer", 5)
-
         text = (
             f"🚀 **X-Rony Advanced Control Panel**\n\n"
             f"💸 Withdrawal Status: `{wd_status}`\n"
@@ -608,7 +652,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_val = "OFF" if current == "ON" else "ON"
         await set_setting("withdraw_global_status", new_val)
         await query.answer(f"Withdrawal status changed to {new_val}", show_alert=True)
-        
         wd_status = new_val
         min_wd = await get_setting("min_withdraw", 100.0)
         ref_bonus = await get_setting("ref_bonus", 0.01)
@@ -724,7 +767,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await numbers_col.delete_many({"service_name": service_to_del})
         await traffic_col.delete_many({"service": service_to_del})
         await query.answer(f"✅ সফলভাবে {service_to_del} এর সব নাম্বার ডিলিট করা হয়েছে!", show_alert=True)
-        
         pipeline = [{"$group": {"_id": {"service": "$service_name", "country": "$country"}, "count": {"$sum": 1}}}]
         cursor = numbers_col.aggregate(pipeline)
         batches = await cursor.to_list(length=100)
@@ -786,11 +828,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if wd_status != "ON":
             await query.message.reply_text("❌ বর্তমানে উইথড্র সিস্টেম গ্লোবালি বন্ধ রাখা হয়েছে।", parse_mode="Markdown")
             return
-
         user_data = await users_col.find_one({"user_id": user_id})
         balance = user_data.get("balance", 0.0) if user_data else 0.0
         min_wd = float(await get_setting("min_withdraw", 100.0))
-        
         if balance < min_wd:
             await query.message.reply_text(
                 f"❌ দুঃখিত! উইথড্র করার জন্য আপনার অন্তত `{min_wd}৳` ব্যালেন্স থাকতে হবে。\n"
@@ -798,14 +838,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
             return
-        
         USER_WITHDRAW_STATE[user_id] = {"step": "SELECT_METHOD"}
         methods = await get_setting("payment_methods", ["Bkash", "Nagad", "Binance"])
         keyboard = []
         for m in methods:
             keyboard.append([InlineKeyboardButton(f"📱 {m}", callback_data=f"wd_meth:{m}")])
         keyboard.append([InlineKeyboardButton("🔙 Back to Balance", callback_data="back_to_balance")])
-        
         await query.message.edit_text(
             f"💸 **Withdrawal Portal**\n\n"
             f"আপনার বর্তমান ব্যালেন্স: `{balance:.2f}৳`\n"
@@ -830,7 +868,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         action = parts[1]
         target_user_id = int(parts[2])
         amount = float(parts[3])
-        
         if action == "yes":
             await query.message.edit_text(f"{query.message.text}\n\n✅ **Status: Confirmed & Completed by Admin**", parse_mode="Markdown")
             try:
@@ -861,15 +898,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not data:
                 await query.message.edit_text("⚠️ সেশন মেয়াদোত্তীর্ণ হয়ে গেছে।")
                 return
-            
             method = data["method"]
             account = data["account"]
             amount = data["amount"]
-            
             await users_col.update_one({"user_id": user_id}, {"$inc": {"balance": -amount}})
             if user_id in USER_WITHDRAW_STATE:
                 del USER_WITHDRAW_STATE[user_id]
-                
             await query.message.edit_text(
                 f"🎉 **উইথড্র রিকোয়েস্ট সফলভাবে জমা হয়েছে!**\n\n"
                 f"💳 Method: `{method}`\n"
@@ -878,7 +912,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"⏳ রিকোয়েস্টটি রিভিউ করে পেমেন্ট সম্পন্ন করা হবে। ধন্যবাদ!",
                 parse_mode="Markdown"
             )
-            
             username_str = f"@{query.from_user.username}" if query.from_user.username else "No Username"
             admin_msg = (
                 f"🚨 **New Withdrawal Request!**\n\n"
@@ -916,7 +949,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         balance = user_data.get("balance", 0.0) if user_data else 0.0
         total_earned = user_data.get("total_earned", 0.0) if user_data else 0.0
         current_otp_rate = await get_setting("otp_rate", 0.60)
-        
         balance_text = (
             f"👤 **User Account Dashboard**\n\n"
             f"💰 Current Balance : `{balance:.2f}৳`\n"
@@ -948,12 +980,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "back_to_main_menu":
         await query.answer()
         user = query.from_user
-        welcome_text = (
-            f"🌐 **NUMBER PANEL**\n\n"
-            f"👋 Welcome, **{user.first_name}**\n"
-            f"🚀 Premium Number Management System\n\n"
-            f"⚡ Fast • Simple • Secure"
-        )
+        custom_welcome = await get_setting("welcome_text", None)
+        if custom_welcome:
+            welcome_text = custom_welcome
+        else:
+            welcome_text = (
+                f"🌐 **NUMBER PANEL**\n\n"
+                f"👋 Welcome, **{user.first_name}**\n"
+                f"🚀 Premium Number Management System\n\n"
+                f"⚡ Fast • Simple • Secure"
+            )
         reply_markup = await build_main_menu(user_id)
         try:
             await query.message.edit_text(welcome_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📱 GET NUMBER", callback_data="get_number_menu")]]))
@@ -1035,17 +1071,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         prefix = query.data.split(":", 1)[1].strip()
         num_req = int(await get_setting("num_request_count", 2))
-        
         cursor = numbers_col.find({
             "phone_number": {"$regex": f"^\\+?{prefix}", "$options": "i"},
             "status": "Available"
         }).limit(num_req)
-        
         numbers = await cursor.to_list(length=num_req)
         if numbers:
             num_ids = [doc["_id"] for doc in numbers]
             await numbers_col.update_many({"_id": {"$in": num_ids}}, {"$set": {"status": "Assigned"}})
-            
             for doc in numbers:
                 await assigned_col.insert_one({
                     "user_id": user_id,
@@ -1053,13 +1086,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "service_name": "Search",
                     "country": "Custom"
                 })
-            
             text_msg = f"🔎 **SEARCH RESULTS** (Prefix: `{prefix}`)"
             keyboard = []
             for doc in numbers:
                 num = doc['phone_number']
                 keyboard.append([InlineKeyboardButton(f"📲 📋 {num}", copy_text=CopyTextButton(text=num))])
-            
             keyboard.append([InlineKeyboardButton("🔄 Change Number", callback_data=f"search_next:{prefix}")])
             keyboard.append([
                 InlineKeyboardButton("🌍 Other Countries", callback_data="get_number_menu"),
@@ -1086,17 +1117,14 @@ async def otp_group_listener(update: Update, context: ContextTypes.DEFAULT_TYPE)
     chat_id = str(message.chat_id)
     text = message.text
 
-    # --- 1. RanaX External Source Forwarding System ---
     ranax_status = await get_setting("ranax_status", "ON")
     if ranax_status == "ON":
-        # চেক করা মেসেজটি আমাদের লিস্টে থাকা কোনো সোর্স চ্যাট আইডি থেকে এসেছে কি না
         source_doc = await ranax_groups_col.find_one({"chat_id": chat_id})
         if source_doc:
-            # যদি সোর্স গ্রুপ থেকে মেসেজ আসে, তবে তা ফরওয়ার্ড গ্রুপগুলোতে বা আপনার মূল ওটিপি গ্রুপে পাঠিয়ে দিবে
             forward_groups = await forward_groups_col.find({}).to_list(length=50)
             target_ids = [fg.get("group_id") for fg in forward_groups]
             if not target_ids:
-                target_ids = [OTP_GROUP_URL] # ডিফল্ট যদি কোনো গ্রুপ সেট করা না থাকে
+                target_ids = [OTP_GROUP_URL]
 
             for tid in target_ids:
                 try:
@@ -1108,7 +1136,6 @@ async def otp_group_listener(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 except Exception:
                     pass
 
-    # --- 2. Main Bot User Number Matcher System ---
     current_otp_rate = float(await get_setting("otp_rate", 0.60))
 
     async for assigned_doc in assigned_col.find({}):
@@ -1118,7 +1145,6 @@ async def otp_group_listener(update: Update, context: ContextTypes.DEFAULT_TYPE)
             service = assigned_doc["service_name"]
             
             await numbers_col.update_one({"phone_number": phone}, {"$set": {"status": "Used"}})
-            
             await users_col.update_one(
                 {"user_id": user_id},
                 {"$inc": {"balance": current_otp_rate, "total_earned": current_otp_rate}}
@@ -1130,11 +1156,9 @@ async def otp_group_listener(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"💬 `{text}`\n\n"
                 f"💵 Added to Balance: `+{current_otp_rate}৳`"
             )
-            
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton(f"📱 {service}", callback_data="get_number_menu")]
             ])
-            
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
@@ -1189,140 +1213,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- RanaX Source Chat ID Add State Handler ---
-    if await is_admin(user_id) and user_id in RANAX_ADD_STATE:
-        state = RANAX_ADD_STATE[user_id]
-        step = state.get("step")
-        if step == "GET_NAME":
-            state["name"] = text.strip()
-            state["step"] = "GET_CHAT_ID"
-            RANAX_ADD_STATE[user_id] = state
-            await update.message.reply_text("🔗 এখন ওই সোর্স গ্রুপ বা চ্যানেলের **Chat ID** (যেমন: `-100xxxxxxxxxx`) লিখে পাঠান:")
-            return
-        elif step == "GET_CHAT_ID":
-            chat_id_val = text.strip()
-            await ranax_groups_col.update_one(
-                {"chat_id": chat_id_val},
-                {"$set": {"name": state["name"], "chat_id": chat_id_val}},
-                upsert=True
-            )
-            del RANAX_ADD_STATE[user_id]
-            await update.message.reply_text("✅ RanaX Source Chat ID সফলভাবে যুক্ত করা হয়েছে! এখন থেকে ঐ গ্রুপ থেকে ওটিপি ফরোয়ার্ড হয়ে আসবে।")
-            return
-
-    if user_id == OWNER_ID and user_id in ADMIN_ADD_STATE:
-        del ADMIN_ADD_STATE[user_id]
-        target_val = text.strip()
-        target_id = None
-        if target_val.isdigit():
-            target_id = int(target_val)
-        else:
-            usr = await users_col.find_one({"username": target_val.lstrip("@")})
-            if usr:
-                target_id = usr["user_id"]
-        
-        if target_id:
-            await admins_col.update_one({"user_id": target_id}, {"$set": {"user_id": target_id, "username": target_val}}, upsert=True)
-            await update.message.reply_text(f"✅ সফলভাবে ইউজার `{target_id}` কে এডমিন হিসেবে যুক্ত করা হয়েছে!", parse_mode="Markdown")
-        else:
-            await update.message.reply_text("❌ ইউজার খুঁজে পাওয়া যায়নি। সঠিক আইডি বা ইউজারনেম দিন।")
-        return
-
-    if await is_admin(user_id) and user_id in CHANNEL_ADD_STATE:
-        state = CHANNEL_ADD_STATE[user_id]
-        step = state.get("step")
-        if step == "GET_NAME":
-            state["name"] = text.strip()
-            state["step"] = "GET_ID"
-            CHANNEL_ADD_STATE[user_id] = state
-            await update.message.reply_text("🔗 এখন চ্যানেলের চ্যাট আইডি (যেমন: `@mychannel` বা `-100...`) লিখে পাঠান:")
-            return
-        elif step == "GET_ID":
-            state["chat_id"] = text.strip()
-            state["step"] = "GET_URL"
-            CHANNEL_ADD_STATE[user_id] = state
-            await update.message.reply_text("🌐 এখন চ্যানেলের ইনভাইট লিংক লিখে পাঠান:")
-            return
-        elif step == "GET_URL":
-            state["url"] = text.strip()
-            await channels_col.update_one(
-                {"chat_id": state["chat_id"]},
-                {"$set": {"name": state["name"], "url": state["url"]}},
-                upsert=True
-            )
-            del CHANNEL_ADD_STATE[user_id]
-            await update.message.reply_text("✅ ফোর্স জয়েন চ্যানেল সফলভাবে যুক্ত করা হয়েছে!")
-            return
-
-    if await is_admin(user_id) and user_id in FORWARD_GROUP_ADD_STATE:
-        state = FORWARD_GROUP_ADD_STATE[user_id]
-        step = state.get("step")
-        if step == "GET_ID":
-            gid = text.strip()
-            await forward_groups_col.update_one({"group_id": gid}, {"$set": {"group_id": gid}}, upsert=True)
-            del FORWARD_GROUP_ADD_STATE[user_id]
-            await update.message.reply_text(f"✅ ফরওয়ার্ড গ্রুপ `{gid}` সফলভাবে যুক্ত করা হয়েছে!")
-            return
-
-    if await is_admin(user_id) and user_id in USER_MANAGE_STATE:
-        action = USER_MANAGE_STATE[user_id].get("action")
-        del USER_MANAGE_STATE[user_id]
-        target_val = text.strip()
-        
-        target_user = None
-        if target_val.isdigit():
-            target_user = await users_col.find_one({"user_id": int(target_val)})
-        else:
-            target_user = await users_col.find_one({"username": target_val.lstrip("@")})
-
-        if not target_user:
-            await update.message.reply_text("❌ ইউজার ডাটাবেজে পাওয়া যায়নি।")
-            return
-
-        u_id = target_user["user_id"]
-        if action == "balance":
-            USER_MANAGE_STATE[user_id] = {"action": "do_balance", "target_id": u_id}
-            await update.message.reply_text(f"👤 User: `{u_id}`\n বর্তমান ব্যালেন্স: `{target_user.get('balance', 0.0)}৳`\n\nনতুন ব্যালেন্স অ্যামাউন্ট বা পরিবর্তন করার পরিমাণ (যেমন `+50` বা `200`) লিখে পাঠান:")
-            return
-        elif action == "ban":
-            current_ban = target_user.get("banned", False)
-            new_ban = not current_ban
-            await users_col.update_one({"user_id": u_id}, {"$set": {"banned": new_ban}})
-            status_str = "ব্যান করা হয়েছে" if new_ban else "আনব্যান করা হয়েছে"
-            await update.message.reply_text(f"✅ ইউজার `{u_id}` সফলভাবে {status_str}।")
-            return
-        elif action == "profile":
-            total_nums = await assigned_col.count_documents({"user_id": u_id})
-            profile_text = (
-                f"👤 **User Profile Details**\n\n"
-                f"🆔 ID: `{u_id}`\n"
-                f"🔗 Username: @{target_user.get('username', 'N/A')}\n"
-                f"💰 Balance: `{target_user.get('balance', 0.0):.2f}৳`\n"
-                f"📈 Total Earned: `{target_user.get('total_earned', 0.0):.2f}৳`\n"
-                f"📱 Total Used/Assigned Numbers: `{total_nums}`\n"
-                f"🚫 Banned Status: `{target_user.get('banned', False)}`"
-            )
-            await update.message.reply_text(profile_text, parse_mode="Markdown")
-            return
-
-    if await is_admin(user_id) and USER_MANAGE_STATE.get(user_id, {}).get("action") == "do_balance":
-        state_data = USER_MANAGE_STATE[user_id]
-        target_id = state_data["target_id"]
-        del USER_MANAGE_STATE[user_id]
-        try:
-            val = float(text.strip())
-            await users_col.update_one({"user_id": target_id}, {"$set": {"balance": val}})
-            await update.message.reply_text(f"✅ ইউজার `{target_id}` এর নতুন ব্যালেন্স সেট করা হয়েছে: `{val}৳`")
-        except ValueError:
-            await update.message.reply_text("❌ সঠিক সংখ্যা দিন।")
-        return
-
+    # --- Admin Settings State Handler for Menu Design Text ---
     if await is_admin(user_id) and user_id in ADMIN_SETTINGS_STATE:
         setting_type = ADMIN_SETTINGS_STATE[user_id].get("setting")
         del ADMIN_SETTINGS_STATE[user_id]
         val = text.strip()
 
-        if setting_type == "edit_otp_link":
+        if setting_type == "edit_welcome_text":
+            await set_setting("welcome_text", val)
+            await update.message.reply_text(f"✅ Welcome Text সফলভাবে আপডেট করা হয়েছে!", parse_mode="Markdown")
+            return
+        elif setting_type == "edit_otp_link":
             await set_setting("otp_button_link", val)
             await update.message.reply_text(f"✅ OTP Button Link updated to: `{val}`", parse_mode="Markdown")
             return
@@ -1381,12 +1282,134 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ Payment method `{val}` removed successfully!")
             return
 
+    # --- RanaX Source Chat ID Add State Handler ---
+    if await is_admin(user_id) and user_id in RANAX_ADD_STATE:
+        state = RANAX_ADD_STATE[user_id]
+        step = state.get("step")
+        if step == "GET_NAME":
+            state["name"] = text.strip()
+            state["step"] = "GET_CHAT_ID"
+            RANAX_ADD_STATE[user_id] = state
+            await update.message.reply_text("🔗 এখন ওই সোর্স গ্রুপ বা চ্যানেলের **Chat ID** (যেমন: `-100xxxxxxxxxx`) লিখে পাঠান:")
+            return
+        elif step == "GET_CHAT_ID":
+            chat_id_val = text.strip()
+            await ranax_groups_col.update_one(
+                {"chat_id": chat_id_val},
+                {"$set": {"name": state["name"], "chat_id": chat_id_val}},
+                upsert=True
+            )
+            del RANAX_ADD_STATE[user_id]
+            await update.message.reply_text("✅ RanaX Source Chat ID সফলভাবে যুক্ত করা হয়েছে! এখন থেকে ঐ গ্রুপ থেকে ওটিপি ফরোয়ার্ড হয়ে আসবে।")
+            return
+
+    if user_id == OWNER_ID and user_id in ADMIN_ADD_STATE:
+        del ADMIN_ADD_STATE[user_id]
+        target_val = text.strip()
+        target_id = None
+        if target_val.isdigit():
+            target_id = int(target_val)
+        else:
+            usr = await users_col.find_one({"username": target_val.lstrip("@")})
+            if usr:
+                target_id = usr["user_id"]
+        if target_id:
+            await admins_col.update_one({"user_id": target_id}, {"$set": {"user_id": target_id, "username": target_val}}, upsert=True)
+            await update.message.reply_text(f"✅ সফলভাবে ইউজার `{target_id}` কে এডমিন হিসেবে যুক্ত করা হয়েছে!", parse_mode="Markdown")
+        else:
+            await update.message.reply_text("❌ ইউজার খুঁজে পাওয়া যায়নি। সঠিক আইডি বা ইউজারনেম দিন।")
+        return
+
+    if await is_admin(user_id) and user_id in CHANNEL_ADD_STATE:
+        state = CHANNEL_ADD_STATE[user_id]
+        step = state.get("step")
+        if step == "GET_NAME":
+            state["name"] = text.strip()
+            state["step"] = "GET_ID"
+            CHANNEL_ADD_STATE[user_id] = state
+            await update.message.reply_text("🔗 এখন চ্যানেলের চ্যাট আইডি (যেমন: `@mychannel` বা `-100...`) লিখে পাঠান:")
+            return
+        elif step == "GET_ID":
+            state["chat_id"] = text.strip()
+            state["step"] = "GET_URL"
+            CHANNEL_ADD_STATE[user_id] = state
+            await update.message.reply_text("🌐 এখন চ্যানেলের ইনভাইট লিংক লিখে পাঠান:")
+            return
+        elif step == "GET_URL":
+            state["url"] = text.strip()
+            await channels_col.update_one(
+                {"chat_id": state["chat_id"]},
+                {"$set": {"name": state["name"], "url": state["url"]}},
+                upsert=True
+            )
+            del CHANNEL_ADD_STATE[user_id]
+            await update.message.reply_text("✅ ফোর্স জয়েন চ্যানেল সফলভাবে যুক্ত করা হয়েছে!")
+            return
+
+    if await is_admin(user_id) and user_id in FORWARD_GROUP_ADD_STATE:
+        state = FORWARD_GROUP_ADD_STATE[user_id]
+        step = state.get("step")
+        if step == "GET_ID":
+            gid = text.strip()
+            await forward_groups_col.update_one({"group_id": gid}, {"$set": {"group_id": gid}}, upsert=True)
+            del FORWARD_GROUP_ADD_STATE[user_id]
+            await update.message.reply_text(f"✅ ফরওয়ার্ড গ্রুপ `{gid}` সফলভাবে যুক্ত করা হয়েছে!")
+            return
+
+    if await is_admin(user_id) and user_id in USER_MANAGE_STATE:
+        action = USER_MANAGE_STATE[user_id].get("action")
+        del USER_MANAGE_STATE[user_id]
+        target_val = text.strip()
+        target_user = None
+        if target_val.isdigit():
+            target_user = await users_col.find_one({"user_id": int(target_val)})
+        else:
+            target_user = await users_col.find_one({"username": target_val.lstrip("@")})
+        if not target_user:
+            await update.message.reply_text("❌ ইউজার ডাটাবেজে পাওয়া যায়নি।")
+            return
+        u_id = target_user["user_id"]
+        if action == "balance":
+            USER_MANAGE_STATE[user_id] = {"action": "do_balance", "target_id": u_id}
+            await update.message.reply_text(f"👤 User: `{u_id}`\n বর্তমান ব্যালেন্স: `{target_user.get('balance', 0.0)}৳`\n\nনতুন ব্যালেন্স অ্যামাউন্ট বা পরিবর্তন করার পরিমাণ (যেমন `+50` বা `200`) লিখে পাঠান:")
+            return
+        elif action == "ban":
+            current_ban = target_user.get("banned", False)
+            new_ban = not current_ban
+            await users_col.update_one({"user_id": u_id}, {"$set": {"banned": new_ban}})
+            status_str = "ব্যান করা হয়েছে" if new_ban else "আনব্যান করা হয়েছে"
+            await update.message.reply_text(f"✅ ইউজার `{u_id}` সফলভাবে {status_str}।")
+            return
+        elif action == "profile":
+            total_nums = await assigned_col.count_documents({"user_id": u_id})
+            profile_text = (
+                f"👤 **User Profile Details**\n\n"
+                f"🆔 ID: `{u_id}`\n"
+                f"🔗 Username: @{target_user.get('username', 'N/A')}\n"
+                f"💰 Balance: `{target_user.get('balance', 0.0):.2f}৳`\n"
+                f"📈 Total Earned: `{target_user.get('total_earned', 0.0):.2f}৳`\n"
+                f"📱 Total Used/Assigned Numbers: `{total_nums}`\n"
+                f"🚫 Banned Status: `{target_user.get('banned', False)}`"
+            )
+            await update.message.reply_text(profile_text, parse_mode="Markdown")
+            return
+
+    if await is_admin(user_id) and USER_MANAGE_STATE.get(user_id, {}).get("action") == "do_balance":
+        state_data = USER_MANAGE_STATE[user_id]
+        target_id = state_data["target_id"]
+        del USER_MANAGE_STATE[user_id]
+        try:
+            val = float(text.strip())
+            await users_col.update_one({"user_id": target_id}, {"$set": {"balance": val}})
+            await update.message.reply_text(f"✅ ইউজার `{target_id}` এর নতুন ব্যালেন্স সেট করা হয়েছে: `{val}৳`")
+        except ValueError:
+            await update.message.reply_text("❌ সঠিক সংখ্যা দিন।")
+        return
+
     if await is_admin(user_id) and user_id in ADMIN_BROADCAST_STATE:
         del ADMIN_BROADCAST_STATE[user_id]
         broadcast_text = text.strip()
-        
         processing_msg = await update.message.reply_text("⏳ ব্রডকাস্ট মেসেজ পাঠানো হচ্ছে, দয়া করে অপেক্ষা করুন...")
-        
         all_users_cursor = users_col.find({})
         success_count = 0
         async for u in all_users_cursor:
@@ -1399,14 +1422,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 success_count += 1
             except Exception:
                 pass
-                
         await processing_msg.edit_text(f"✅ **ব্রডকাস্ট সফলভাবে সম্পন্ন হয়েছে!**\n📬 মোট ডেলিভারি হয়েছে: `{success_count}` জন ইউজারের কাছে।", parse_mode="Markdown")
         return
 
     if user_id in USER_WITHDRAW_STATE:
         state = USER_WITHDRAW_STATE[user_id]
         step = state.get("step")
-        
         if step == "GET_ACCOUNT":
             state["account"] = text.strip()
             state["step"] = "GET_AMOUNT"
@@ -1417,14 +1438,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=back_keyboard()
             )
             return
-            
         elif step == "GET_AMOUNT":
             try:
                 amount = float(text.strip())
                 user_data = await users_col.find_one({"user_id": user_id})
                 balance = user_data.get("balance", 0.0) if user_data else 0.0
                 min_wd = float(await get_setting("min_withdraw", 100.0))
-                
                 if amount <= 0:
                     await update.message.reply_text("❌ অ্যামাউন্ট সঠিক নয়। আবার চেষ্টা করুন:", reply_markup=back_keyboard())
                     return
@@ -1434,11 +1453,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if amount < min_wd:
                     await update.message.reply_text(f"❌ সর্বনিম্ন `{min_wd}৳` উইথড্র করতে হবে। সঠিক অ্যামাউন্ট দিন:", reply_markup=back_keyboard())
                     return
-                
                 state["amount"] = amount
                 method = state["method"]
                 account = state["account"]
-                
                 confirm_keyboard = InlineKeyboardMarkup([
                     [
                         InlineKeyboardButton("✅ Confirm", callback_data="wd_user_conf:yes"),
@@ -1462,23 +1479,19 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in USER_SEARCH_STATE:
         prefix = text.strip()
         del USER_SEARCH_STATE[user_id]
-        
         if not prefix:
             reply_markup = await build_main_menu(user_id)
             await update.message.reply_text("❌ কান্ট্রি কোড বা সিরিয়াল খালি রাখা যাবে না।", reply_markup=reply_markup)
             return
-            
         num_req = int(await get_setting("num_request_count", 2))
         cursor = numbers_col.find({
             "phone_number": {"$regex": f"^\\+?{prefix}", "$options": "i"},
             "status": "Available"
         }).limit(num_req)
-        
         numbers = await cursor.to_list(length=num_req)
         if numbers:
             num_ids = [doc["_id"] for doc in numbers]
             await numbers_col.update_many({"_id": {"$in": num_ids}}, {"$set": {"status": "Assigned"}})
-            
             for doc in numbers:
                 await assigned_col.insert_one({
                     "user_id": user_id,
@@ -1486,13 +1499,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "service_name": "Search",
                     "country": "Custom"
                 })
-            
             text_msg = f"🔎 **SEARCH RESULTS** (Prefix: `{prefix}`)"
             keyboard = []
             for doc in numbers:
                 num = doc['phone_number']
                 keyboard.append([InlineKeyboardButton(f"📲 📋 {num}", copy_text=CopyTextButton(text=num))])
-            
             keyboard.append([InlineKeyboardButton("🔄 Change Number", callback_data=f"search_next:{prefix}")])
             keyboard.append([
                 InlineKeyboardButton("🌍 Other Countries", callback_data="get_number_menu"),
@@ -1511,25 +1522,21 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await is_admin(user_id) and user_id in ADMIN_UPLOAD_STATE:
         state_data = ADMIN_UPLOAD_STATE[user_id]
         current_step = state_data.get("step")
-
         if current_step == "GET_SERVICE":
             service_name = text.strip()
             ADMIN_UPLOAD_STATE[user_id] = {"step": "GET_COUNTRY", "service": service_name}
             await update.message.reply_text(f"✅ সার্ভিস: `{service_name}`\n\n🌍 এখন কান্ট্রির নাম লিখে পাঠান:", parse_mode="Markdown", reply_markup=back_keyboard())
             return
-
         elif current_step == "GET_COUNTRY":
             country = text.strip()
             service_name = state_data["service"]
             ADMIN_UPLOAD_STATE[user_id] = {"step": "GET_NUMBERS", "service": service_name, "country": country}
             await update.message.reply_text(f"✅ সার্ভিস: `{service_name}` | কান্ট্রি: `{country}`\n\n📂 এখন নাম্বার ফাইল (`.txt`) সেন্ড করুন অথবা নাম্বারগুলো পেস্ট করে দিন:", parse_mode="Markdown", reply_markup=back_keyboard())
             return
-
         elif current_step == "GET_NUMBERS" and text:
             service_name = state_data["service"]
             country = state_data["country"]
             numbers_list = [line.strip() for line in text.split("\n") if line.strip()]
-            
             docs = [{"service_name": service_name, "country": country, "phone_number": num, "status": "Available"} for num in numbers_list]
             if docs:
                 await numbers_col.insert_many(docs)
@@ -1539,9 +1546,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     upsert=True
                 )
             del ADMIN_UPLOAD_STATE[user_id]
-            
             asyncio.create_task(broadcast_new_numbers_alert(context, service_name, len(numbers_list)))
-            
             success_text = (
                 f"🎉 **সফলভাবে নাম্বার আপলোড সম্পন্ন হয়েছে!**\n\n"
                 f"💬 সার্ভিস নাম: `{service_name}`\n"
@@ -1566,11 +1571,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 content = f.read()
             if os.path.exists(file_path):
                 os.remove(file_path)
-            
             numbers_list = [line.strip() for line in content.split("\n") if line.strip()]
             service_name = state_data["service"]
             country = state_data["country"]
-            
             docs = [{"service_name": service_name, "country": country, "phone_number": num, "status": "Available"} for num in numbers_list]
             if docs:
                 await numbers_col.insert_many(docs)
@@ -1580,9 +1583,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     upsert=True
                 )
             del ADMIN_UPLOAD_STATE[user_id]
-            
             asyncio.create_task(broadcast_new_numbers_alert(context, service_name, len(numbers_list)))
-            
             success_text = (
                 f"🎉 **ফাইল থেকে সফলভাবে নাম্বার আপলোড সম্পন্ন হয়েছে!**\n\n"
                 f"💬 সার্ভিস নাম: `{service_name}`\n"
@@ -1598,7 +1599,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "/start":
         await start(update, context)
-        
     elif text == "📱 GET NUMBER":
         services = await numbers_col.distinct("service_name", {"status": "Available"})
         if services:
@@ -1607,11 +1607,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("📱 **Select a Service:**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
         else:
             await update.message.reply_text("⚠️ বর্তমানে কোনো নাম্বার স্টক এ নেই!", parse_mode="Markdown")
-        
     elif text == "🔎 SEARCH NUMBER":
         USER_SEARCH_STATE[user_id] = True
         await update.message.reply_text("🔎 **Search Number**\n\nদয়া করে কান্ট্রি কোড বা সিরিয়াল নাম্বার লিখে পাঠান (যেমন: `223`):", parse_mode="Markdown", reply_markup=back_keyboard())
-        
     elif text == "🚦 TRAFFIC":
         traffic_list = await traffic_col.find({}).to_list(length=100)
         if not traffic_list:
@@ -1622,7 +1620,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 traffic_text += f"🌍 **{item['service']}**\n{item['country']} : {item['status']} {item['icon']}\n\n"
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data="refresh_traffic")]])
         await update.message.reply_text(traffic_text, parse_mode="Markdown", reply_markup=keyboard)
-        
     elif text == "👥 REFERRAL":
         bot_username = context.bot.username
         ref_link = f"https://t.me/{bot_username}?start={user_id}"
@@ -1636,13 +1633,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         reply_markup = await build_main_menu(user_id)
         await update.message.reply_text(ref_text, parse_mode="Markdown", reply_markup=reply_markup)
-        
     elif text == "💰 BALANCE":
         user_data = await users_col.find_one({"user_id": user_id})
         balance = user_data.get("balance", 0.0) if user_data else 0.0
         total_earned = user_data.get("total_earned", 0.0) if user_data else 0.0
         current_otp_rate = await get_setting("otp_rate", 0.60)
-        
         balance_text = (
             f"👤 **User Account Dashboard**\n\n"
             f"💰 Current Balance : `{balance:.2f}৳`\n"
@@ -1654,7 +1649,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("💸 Withdraw Balance", callback_data="withdraw_menu")]
         ])
         await update.message.reply_text(balance_text, parse_mode="Markdown", reply_markup=keyboard)
-        
     elif text == "🆘 SUPPORT":
         support_text = (
             f"🆘 **SUPPORT & HELP DESK**\n\n"
@@ -1666,11 +1660,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("💬 OTP Group", url=OTP_GROUP_URL)]
         ]
         await update.message.reply_text(support_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
-        
     elif text == "👑 ADMIN PANEL" and await is_admin(user_id):
         text_msg, markup = await get_admin_panel_markup(user_id)
         await update.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=markup)
-        
     else:
         if await is_admin(user_id) and text == "":
             pass
@@ -1706,9 +1698,8 @@ async def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     application.add_handler(MessageHandler(filters.Document.ALL, message_handler))
     
-    # ব্যাকএন্ডে গ্রুপ বা চ্যানেলের যেকোনো মেসেজ ফিল্টার করার হ্যান্ডলার
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, otp_group_listener))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.SUPERGROUP, otp_group_listener))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.SUPERGROUPS, otp_group_listener))
 
     print("Zentrix Bot with RanaX Auto-Forwarder is running successfully...")
     
