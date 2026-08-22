@@ -47,6 +47,7 @@ FORWARD_GROUP_ADD_STATE = {}
 USER_MANAGE_STATE = {}
 RANAX_ADD_STATE = {}
 MENU_EDIT_STATE = {}  # মেনু টেক্সট বা বাটন কাস্টমাইজেশনের জন্য স্টেট
+TEST_FLOW_STATE = {}  # টেস্ট ফ্লো ডেটা সংরক্ষণের জন্য স্টেট
 
 # --- Dynamic Settings Getter/Setter ---
 async def get_setting(key, default_val):
@@ -94,7 +95,6 @@ async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # --- Reply Keyboards (Normal Users - Dynamic Support) ---
 async def main_menu_keyboard(user_id: int):
-    # ডায়নামিক নামগুলো ডাটাবেজ থেকে লোড করা হচ্ছে, না থাকলে ডিফল্ট নাম ব্যবহার হবে
     btn_get_num = await get_setting("btn_get_number", "📱 GET NUMBER")
     btn_search_num = await get_setting("btn_search_number", "🔎 SEARCH NUMBER")
     btn_traffic = await get_setting("btn_traffic", "🚦 TRAFFIC")
@@ -153,7 +153,7 @@ async def get_admin_panel_markup(user_id: int):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
-    for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE]:
+    for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_FLOW_STATE]:
         if user.id in state_dict:
             del state_dict[user.id]
 
@@ -276,7 +276,62 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("StexSMS", callback_data="stex_control"), InlineKeyboardButton("Voltx", callback_data="voltx_control")],
             [InlineKeyboardButton("Zenex", callback_data="zenex_control"), InlineKeyboardButton("YE SMS", callback_data="ye_control")],
             [InlineKeyboardButton("RanaX", callback_data="ranax_control"), InlineKeyboardButton("Emoji", callback_data="premium_emoji")],
-            [InlineKeyboardButton("Menu Design", callback_data="menu_design"), InlineKeyboardButton("Test", callback_data="test")],
+            [InlineKeyboardButton("Menu Design", callback_data="menu_design"), InlineKeyboardButton("Test", callback_data="test_flow_start")],
+            [InlineKeyboardButton("👑 Admin Mgmt", callback_data="adm_mgmt_menu"), InlineKeyboardButton("⚙️ Force Join", callback_data="adm_fj_menu")],
+            [InlineKeyboardButton("👥 User Mgmt", callback_data="adm_usermgmt_menu"), InlineKeyboardButton("💬 OTP Groups", callback_data="adm_otpgroup_menu")],
+            [InlineKeyboardButton("🚀 X-Rony Panel", callback_data="adm_xrony_menu")],
+            [InlineKeyboardButton("🔙 Back", callback_data="adm_back")]
+        ])
+        await query.message.edit_text(sys_text, parse_mode="Markdown", reply_markup=sys_keyboard)
+
+    # --- Test Flow Handler Start ---
+    elif query.data == "test_flow_start" and await is_admin(user_id):
+        await query.answer()
+        TEST_FLOW_STATE[user_id] = {"step": "WAITING_FOR_SERVICE"}
+        await query.message.edit_text(
+            "🧪 **Test Flow (GET_SERVICE)**\n\nদয়া করে টেস্ট করার জন্য সার্ভিসের নামটি লিখে পাঠান:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]])
+        )
+
+    elif query.data.startswith("test_lang_") and await is_admin(user_id):
+        state = TEST_FLOW_STATE.get(user_id)
+        if not state:
+            await query.answer("⚠️ সেশন মেয়াদোত্তীর্ণ হয়ে গেছে। আবার চেষ্টা করুন।", show_alert=True)
+            return
+
+        selected_lang = query.data.replace("test_lang_", "").upper()
+        
+        test_message = (
+            f"🧪 **[TEST MESSAGE - OTP HUB]**\n\n"
+            f"🔹 **Service:** {state.get('serviceName')}\n"
+            f"📱 **Phone:** `{state.get('phoneNumber')}`\n"
+            f"🔑 **OTP Code:** `{state.get('otpCode')}`\n"
+            f"🌐 **Language:** {selected_lang}\n\n"
+            f"_Status: Design and style check successful._"
+        )
+
+        # ফরওয়ার্ড গ্রুপগুলো থেকে প্রথম গ্রুপ আইডি নেওয়া অথবা ডিফল্ট ওটিপি গ্রুপ লিংক ব্যবহার করা
+        forward_groups = await forward_groups_col.find({}).to_list(length=1)
+        target_group = forward_groups[0].get("group_id") if forward_groups else OTP_GROUP_URL
+
+        try:
+            await context.bot.send_message(chat_id=target_group, text=test_message, parse_mode="Markdown")
+            await query.answer("✅ সফলভাবে টেস্ট মেসেজটি OTP Group-এ পাঠানো হয়েছে!", show_alert=True)
+        except Exception as e:
+            await query.answer(f"❌ গ্রুপে মেসেজ পাঠাতে সমস্যা হয়েছে: {str(e)}", show_alert=True)
+
+        delete tp state
+        if user_id in TEST_FLOW_STATE:
+            del TEST_FLOW_STATE[user_id]
+
+        # ব্যাক টু সিস্টেম হাব
+        sys_text = "⚙️ **System Control Hub**\n\nনিচের অপশনগুলো থেকে ম্যানেজ করুন:"
+        sys_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("StexSMS", callback_data="stex_control"), InlineKeyboardButton("Voltx", callback_data="voltx_control")],
+            [InlineKeyboardButton("Zenex", callback_data="zenex_control"), InlineKeyboardButton("YE SMS", callback_data="ye_control")],
+            [InlineKeyboardButton("RanaX", callback_data="ranax_control"), InlineKeyboardButton("Emoji", callback_data="premium_emoji")],
+            [InlineKeyboardButton("Menu Design", callback_data="menu_design"), InlineKeyboardButton("Test", callback_data="test_flow_start")],
             [InlineKeyboardButton("👑 Admin Mgmt", callback_data="adm_mgmt_menu"), InlineKeyboardButton("⚙️ Force Join", callback_data="adm_fj_menu")],
             [InlineKeyboardButton("👥 User Mgmt", callback_data="adm_usermgmt_menu"), InlineKeyboardButton("💬 OTP Groups", callback_data="adm_otpgroup_menu")],
             [InlineKeyboardButton("🚀 X-Rony Panel", callback_data="adm_xrony_menu")],
@@ -329,7 +384,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]}})
         await query.answer("✅ সকল মেনু এবং বাটন ডিফল্ট সেটিংয়ে ফিরিয়ে আনা হয়েছে!", show_alert=True)
         
-        # রিফ্রেশ মেনু ডিজাইন প্যানেল
         menu_text = f"🎨 **Menu & Button Customization Hub**\n\nবটের স্টার্ট মেসেজ এবং রিপ্লাই বাটনগুলোর নাম এখান থেকে আপনার পছন্দমতো পরিবর্তন করতে পারবেন।"
         menu_keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("✏️ Edit Start Menu", callback_data="m_edit_start"), InlineKeyboardButton("✏️ Edit GET NUMBER", callback_data="m_edit_get")],
@@ -710,27 +764,27 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "xr_set_minwd" and await is_admin(user_id):
         await query.answer()
         ADMIN_SETTINGS_STATE[user_id] = {"setting": "set_min_withdraw"}
-        await query.message.edit_text("💵 নতুন মিনিমাম উইথড্র অ্যামাউন্ট লিখে পাঠান (যেমন: `150`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_xrony_menu")]]))
+        await query.message.edit_text("💵 নতুন মিনিমাম উইথড্র অ্যামাউন্ট লিখে পাঠান (যেমন: `150`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_xrony_menu")]])
 
     elif query.data == "xr_set_ref" and await is_admin(user_id):
         await query.answer()
         ADMIN_SETTINGS_STATE[user_id] = {"setting": "set_ref_bonus"}
-        await query.message.edit_text("👥 নতুন রেফার বোনাস অ্যামাউন্ট লিখে পাঠান (যেমন: `0.05`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_xrony_menu")]]))
+        await query.message.edit_text("👥 নতুন রেফার বোনাস অ্যামাউন্ট লিখে পাঠান (যেমন: `0.05`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_xrony_menu")]])
 
     elif query.data == "xr_set_otprate" and await is_admin(user_id):
         await query.answer()
         ADMIN_SETTINGS_STATE[user_id] = {"setting": "set_otp_rate"}
-        await query.message.edit_text("⚡ প্রতি ওটিপি রেট লিখে পাঠান (যেমন: `0.80`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_xrony_menu")]]))
+        await query.message.edit_text("⚡ প্রতি ওটিপি রেট লিখে পাঠান (যেমন: `0.80`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_xrony_menu")]])
 
     elif query.data == "xr_set_numreq" and await is_admin(user_id):
         await query.answer()
         ADMIN_SETTINGS_STATE[user_id] = {"setting": "set_num_req"}
-        await query.message.edit_text("📦 এক সাথে ইউজারকে কয়টি করে নাম্বার দেওয়া হবে তা লিখুন (যেমন: `5`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_xrony_menu")]]))
+        await query.message.edit_text("📦 এক সাথে ইউজারকে কয়টি করে নাম্বার দেওয়া হবে তা লিখুন (যেমন: `5`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_xrony_menu")]])
 
     elif query.data == "xr_set_cooldown" and await is_admin(user_id):
         await query.answer()
         ADMIN_SETTINGS_STATE[user_id] = {"setting": "set_cooldown"}
-        await query.message.edit_text("⏱️ কোডাউন সেকেন্ড সেট করুন (যেমন: `10`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_xrony_menu")]]))
+        await query.message.edit_text("⏱️ কোডাউন সেকেন্ড সেট করুন (যেমন: `10`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_xrony_menu")]])
 
     elif query.data == "xr_pay_methods" and await is_admin(user_id):
         await query.answer()
@@ -745,12 +799,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "xr_add_pay" and await is_admin(user_id):
         await query.answer()
         ADMIN_SETTINGS_STATE[user_id] = {"setting": "add_pay_method"}
-        await query.message.edit_text("➕ নতুন পেমেন্ট মেথডের নাম লিখে পাঠান (যেমন: `Rocket`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="xr_pay_methods")]]))
+        await query.message.edit_text("➕ নতুন পেমেন্ট মেথডের নাম লিখে পাঠান (যেমন: `Rocket`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="xr_pay_methods")]])
 
     elif query.data == "xr_rem_pay" and await is_admin(user_id):
         await query.answer()
         ADMIN_SETTINGS_STATE[user_id] = {"setting": "rem_pay_method"}
-        await query.message.edit_text("🗑️ যে পেমেন্ট মেথডটি ডিলিট করতে চান তার নাম লিখে পাঠান:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="xr_pay_methods")]]))
+        await query.message.edit_text("🗑️ যে পেমেন্ট মেথডটি ডিলিট করতে চান তার নাম লিখে পাঠান:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="xr_pay_methods")]])
 
     elif query.data == "adm_leaderboard" and await is_admin(user_id):
         await query.answer()
@@ -1238,7 +1292,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == "🔙 Back":
-        for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE]:
+        for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_FLOW_STATE]:
             if user_id in state_dict:
                 del state_dict[user_id]
             
@@ -1265,6 +1319,41 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(inline_kb)
         )
         return
+
+    # --- Test Flow State Handler ---
+    if await is_admin(user_id) and user_id in TEST_FLOW_STATE:
+        state = TEST_FLOW_STATE[user_id]
+        step = state.get("step")
+
+        if step == "WAITING_FOR_SERVICE":
+            state["serviceName"] = text.strip()
+            state["step"] = "WAITING_FOR_PHONE"
+            TEST_FLOW_STATE[user_id] = state
+            await update.message.reply_text("📱 এবার ফোন নম্বরটি লিখে পাঠান:")
+            return
+        elif step == "WAITING_FOR_PHONE":
+            state["phoneNumber"] = text.strip()
+            state["step"] = "WAITING_FOR_OTP"
+            TEST_FLOW_STATE[user_id] = state
+            await update.message.reply_text("🔑 এবার ওটিপি (OTP) কোডটি লিখে পাঠান:")
+            return
+        elif step == "WAITING_FOR_OTP":
+            state["otpCode"] = text.strip()
+            state["step"] = "WAITING_FOR_LANG"
+            TEST_FLOW_STATE[user_id] = state
+            
+            lang_keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("EN", callback_data="test_lang_en"),
+                    InlineKeyboardButton("FR", callback_data="test_lang_fr")
+                ],
+                [
+                    InlineKeyboardButton("ID", callback_data="test_lang_id"),
+                    InlineKeyboardButton("BN", callback_data="test_lang_bn")
+                ]
+            ])
+            await update.message.reply_text("🌐 মেসেজের জন্য ভাষা সিলেক্ট করুন:", reply_markup=lang_keyboard)
+            return
 
     # --- Menu Customization State Handler ---
     if await is_admin(user_id) and user_id in MENU_EDIT_STATE:
@@ -1782,7 +1871,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         if await is_admin(user_id) and text == "":
             pass
-        elif not update.message.document and not any(user_id in d for d in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE]):
+        elif not update.message.document and not any(user_id in d for d in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_FLOW_STATE]):
             reply_markup = await build_main_menu(user_id)
             await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন।", reply_markup=reply_markup)
 
