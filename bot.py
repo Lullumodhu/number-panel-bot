@@ -2094,6 +2094,258 @@ async def main():
     application = Application.builder().token(BOT_TOKEN).build()
 
     await application.bot.set_my_commands([BotCommand("start", "Start the bot")])
+    import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+# আপনার টেলিগ্রাম বটের টোকেন এখানে দিন
+TOKEN = "YOUR_BOT_TOKEN_HERE"
+bot = telebot.TeleBot(TOKEN)
+
+# ডেটা স্ট্রাকচার (বাস্তব প্রোডাকশনে ডেটাবেস ব্যবহার করবেন)
+# structure: { panel_name: { api_keys: [], services: { service_name: { countries: { country_name: [ranges] } } } } }
+database = {
+    "StexSMS": {"api_keys": [], "services": {}},
+    "Voltx": {"api_keys": [], "services": {}},
+    "Zenex": {"api_keys": [], "services": {}},
+    "YE_SMS": {"api_keys": [], "services": {}}
+}
+
+# সাময়িক ইউজার স্টেট ট্র্যাক করার জন্য
+user_states = {}
+
+# ১. মেইন অ্যাডমিন প্যানেল যেখানে ৪টি প্যানেলের বাটন থাকবে
+@bot.message_handler(commands=['admin', 'panel'])
+def admin_panel(message):
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("StexSMS", callback_data="panel_StexSMS"),
+        InlineKeyboardButton("Voltx", callback_data="panel_Voltx"),
+        InlineKeyboardButton("Zenex", callback_data="panel_Zenex"),
+        InlineKeyboardButton("YE SMS", callback_data="panel_YE_SMS"),
+        InlineKeyboardButton("🔙 Back", callback_data="main_menu")
+    )
+    bot.send_message(message.chat.id, "⚙️ **System Control Hub**\n નીચેના ઓપ્શનોમાંથી મેનેજ કરો:", reply_markup=markup, parse_mode="Markdown")
+
+# ২. প্যানেল হোম পেজ হ্যান্ডলার (যেমন: Voltx Control Panel)
+@bot.callback_query_handler(func=lambda call: call.data.startswith("panel_"))
+def panel_home(call):
+    panel_name = call.data.split("_")[1]
+    user_states[call.from_user.id] = {"panel": panel_name}
+    
+    api_count = len(database[panel_name]["api_keys"])
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton(f"➕ Add {panel_name} Key", callback_data=f"add_key_{panel_name}"),
+        InlineKeyboardButton(f"🛡️ View/Del Keys", callback_data=f"view_keys_{panel_name}"),
+        InlineKeyboardButton(f"⚙️ Manage {panel_name} Services", callback_data=f"manage_services_{panel_name}"),
+        InlineKeyboardButton(f"🔍 Search Country", callback_data=f"search_country_{panel_name}"),
+        InlineKeyboardButton("🔙 Back", callback_data="back_to_admin")
+    )
+    
+    text = (f"⚡ **{panel_name} Control Panel**\n\n"
+            f"Total API Keys: {api_count}\n"
+            f"Manage your {panel_name} API Keys below:")
+    
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+# ৩. এপিআই কি যুক্ত করার প্রম্পট
+@bot.callback_query_handler(func=lambda call: call.data.startswith("add_key_"))
+def prompt_add_key(call):
+    panel_name = call.data.split("_")[2]
+    user_states[call.from_user.id] = {"action": "waiting_api_key", "panel": panel_name}
+    
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("❌ Cancel", callback_data=f"panel_{panel_name}"))
+    
+    bot.edit_message_text(
+        f"✍️ Send the new **{panel_name} API Key**:",
+        call.message.chat.id, call.message.message_id,
+        reply_markup=markup, parse_mode="Markdown"
+    )
+
+# ৪. সার্ভিস ম্যানেজমেন্ট পেজ
+@bot.callback_query_handler(func=lambda call: call.data.startswith("manage_services_"))
+def manage_services(call):
+    panel_name = call.data.split("_")[2]
+    user_states[call.from_user.id] = {"panel": panel_name}
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    
+    # বিদ্যমান সার্ভিসগুলোর জন্য বাটন তৈরি
+    services = database[panel_name]["services"]
+    for serv in services.keys():
+        markup.add(InlineKeyboardButton(f"📌 {serv}", callback_data=f"serv_{panel_name}_{serv}"))
+        
+    markup.add(
+        InlineKeyboardButton("➕ Add New Service", callback_data=f"add_service_{panel_name}"),
+        InlineKeyboardButton("🔙 Back", callback_data=f"panel_{panel_name}")
+    )
+    
+    bot.edit_message_text(
+        f"⚡ **{panel_name} Services Manager**\nManage your API-based dynamic services below:",
+        call.message.chat.id, call.message.message_id,
+        reply_markup=markup, parse_mode="Markdown"
+    )
+
+# ৫. নতুন সার্ভিস যোগ করার প্রম্পট
+@bot.callback_query_handler(func=lambda call: call.data.startswith("add_service_"))
+def prompt_add_service(call):
+    panel_name = call.data.split("_")[2]
+    user_states[call.from_user.id] = {"action": "waiting_service_name", "panel": panel_name}
+    
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("❌ Cancel", callback_data=f"manage_services_{panel_name}"))
+    
+    bot.edit_message_text(
+        "✍️ **Enter Service Name (e.g. TELEGRAM, FACEBOOK):**",
+        call.message.chat.id, call.message.message_id,
+        reply_markup=markup, parse_mode="Markdown"
+    )
+
+# ৬. নির্দিষ্ট সার্ভিস সিলেক্ট করার পর (কান্ট্রি ম্যানেজমেন্ট)
+@bot.callback_query_handler(func=lambda call: call.data.startswith("serv_"))
+def view_service_countries(call):
+    data_parts = call.data.split("_")
+    panel_name = data_parts[1]
+    serv_name = data_parts[2]
+    
+    user_states[call.from_user.id] = {"panel": panel_name, "service": serv_name}
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    countries = database[panel_name]["services"][serv_name]["countries"]
+    
+    for country in countries.keys():
+        ranges_count = len(countries[country])
+        markup.add(InlineKeyboardButton(f"🌍 {country} ({ranges_count} Ranges)", callback_data=f"country_{panel_name}_{serv_name}_{country}"))
+        
+    markup.add(
+        InlineKeyboardButton("➕ Add Country", callback_data=f"add_country_{panel_name}_{serv_name}"),
+        InlineKeyboardButton("🗑️ Delete Service", callback_data=f"del_serv_{panel_name}_{serv_name}"),
+        InlineKeyboardButton("🔙 Back", callback_data=f"manage_services_{panel_name}")
+    )
+    
+    bot.edit_message_text(
+        f"📁 **Service: {serv_name}**\nManage countries for this service:",
+        call.message.chat.id, call.message.message_id,
+        reply_markup=markup, parse_mode="Markdown"
+    )
+
+# ৭. কান্ট্রি যোগ করার প্রম্পট
+@bot.callback_query_handler(func=lambda call: call.data.startswith("add_country_"))
+def prompt_add_country(call):
+    data_parts = call.data.split("_")
+    panel_name = data_parts[2]
+    serv_name = data_parts[3]
+    
+    user_states[call.from_user.id] = {"action": "waiting_country_name", "panel": panel_name, "service": serv_name}
+    
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("❌ Cancel", callback_data=f"serv_{panel_name}_{serv_name}"))
+    
+    bot.edit_message_text(
+        "✍️ **Enter Country Name (e.g. Guinea):**",
+        call.message.chat.id, call.message.message_id,
+        reply_markup=markup, parse_mode="Markdown"
+    )
+
+# ৮. নির্দিষ্ট কান্ট্রির ভেতর রেঞ্জ ম্যানেজমেন্ট
+@bot.callback_query_handler(func=lambda call: call.data.startswith("country_"))
+def manage_country_ranges(call):
+    data_parts = call.data.split("_")
+    panel_name = data_parts[1]
+    serv_name = data_parts[2]
+    country_name = data_parts[3]
+    
+    user_states[call.from_user.id] = {"panel": panel_name, "service": serv_name, "country": country_name}
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    ranges = database[panel_name]["services"][serv_name]["countries"][country_name]
+    
+    for r in ranges:
+        markup.add(InlineKeyboardButton(f"Range: {r}", callback_data=f"del_range_{panel_name}_{serv_name}_{country_name}_{r}"))
+        
+    markup.add(
+        InlineKeyboardButton("➕ Add Range", callback_data=f"add_range_{panel_name}_{serv_name}_{country_name}"),
+        InlineKeyboardButton("🗑️ Delete Entire Country", callback_data=f"del_country_{panel_name}_{serv_name}_{country_name}"),
+        InlineKeyboardButton("🔙 Back", callback_data=f"serv_{panel_name}_{serv_name}")
+    )
+    
+    bot.edit_message_text(
+        f"📍 **Service: {serv_name} | Country: {country_name}**\nTotal Ranges: {len(ranges)}\nClick on a range below to delete it, or add a new one.",
+        call.message.chat.id, call.message.message_id,
+        reply_markup=markup, parse_mode="Markdown"
+    )
+
+# ৯. রেঞ্জ যোগ করার প্রম্পট
+@bot.callback_query_handler(func=lambda call: call.data.startswith("add_range_"))
+def prompt_add_range(call):
+    data_parts = call.data.split("_")
+    panel_name = data_parts[2]
+    serv_name = data_parts[3]
+    country_name = data_parts[4]
+    
+    user_states[call.from_user.id] = {"action": "waiting_range", "panel": panel_name, "service": serv_name, "country": country_name}
+    
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("❌ Cancel", callback_data=f"country_{panel_name}_{serv_name}_{country_name}"))
+    
+    bot.edit_message_text(
+        f"✍️ **Send the new Range for {country_name} (e.g. 22467XXX):**",
+        call.message.chat.id, call.message.message_id,
+        reply_markup=markup, parse_mode="Markdown"
+    )
+
+# ১০. টেক্সট ইনপুট হ্যান্ডলার (API Key, Service Name, Country Name, Range রিসিভ করার জন্য)
+@bot.message_handler(func=lambda message: True)
+def handle_text_inputs(message):
+    user_id = message.from_user.id
+    if user_id not in user_states:
+        return
+    
+    state = user_states[user_id]
+    action = state.get("action")
+    panel = state.get("panel")
+    
+    if action == "waiting_api_key":
+        api_key = message.text.strip()
+        database[panel]["api_keys"].append(api_key)
+        bot.send_message(message.id, f"✅ Successfully added {panel} API Key!")
+        user_states[user_id] = {}
+        
+    elif action == "waiting_service_name":
+        serv_name = message.text.strip().upper()
+        if serv_name not in database[panel]["services"]:
+            database[panel]["services"][serv_name] = {"countries": {}}
+        bot.send_message(message.chat.id, f"✅ Service '{serv_name}' added successfully!")
+        user_states[user_id] = {}
+        
+    elif action == "waiting_country_name":
+        country_name = message.text.strip().title()
+        serv_name = state.get("service")
+        if country_name not in database[panel]["services"][serv_name]["countries"]:
+            database[panel]["services"][serv_name]["countries"][country_name] = []
+        bot.send_message(message.chat.id, f"✅ Country '{country_name}' added successfully!")
+        user_states[user_id] = {}
+        
+    elif action == "waiting_range":
+        range_val = message.text.strip()
+        serv_name = state.get("service")
+        country_name = state.get("country")
+        database[panel]["services"][serv_name]["countries"][country_name].append(range_val)
+        
+        # নাম্বার ফরম্যাটিং রিকোয়ারমেন্ট: ৪টি প্যানেলের প্রথম অক্ষর প্রিফিক্স হিসেবে যুক্ত করা
+        prefix = panel[0].upper() # S (StexSMS), V (Voltx), Z (Zenex), Y (YE SMS -> Y)
+        formatted_number_example = f"{prefix}-{range_val}"
+        
+        bot.send_message(message.chat.id, f"✅ Range added & Connected to {panel}!\n📲 Example Get Number output: `{formatted_number_example}`", parse_mode="Markdown")
+        user_states[user_id] = {}
+
+# বটের মূল এক্সিকিউশন
+if __name__ == "__main__":
+    print("Bot is running...")
+    bot.infinity_polling()
+
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(callback_handler))
