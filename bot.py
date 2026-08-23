@@ -633,15 +633,15 @@ async def provider_panel_markup(provider: str):
     ranges = await provider_ranges_col.count_documents({"provider": provider})
     text = (
         f"âš¡ **{label} Control Panel**\n\n"
-        f"Total API Keys: `{keys}`\n"
-        f"Services: `{services}`  â€¢  Countries: `{countries}`  â€¢  Ranges: `{ranges}`\n\n"
+        f"ðŸ”‘ Total API Keys: `{keys}`\n"
+        f"ðŸ“ Services: `{services}`  â€¢  ðŸŒ Countries: `{countries}`  â€¢  ðŸ“ Ranges: `{ranges}`\n\n"
         f"Manage your {label} API keys, services, countries and ranges below."
     )
     keyboard = [
-        [InlineKeyboardButton(f"âž• Add {label} Key", callback_data=f"p_add_key:{provider}")],
-        [InlineKeyboardButton("ðŸ—‘ View/Del Keys", callback_data=f"p_keys:{provider}")],
-        [InlineKeyboardButton(f"âš™ï¸ Manage {label} Services", callback_data=f"p_services:{provider}")],
-        [InlineKeyboardButton("ðŸŒ Search Country", callback_data=f"p_search:{provider}")],
+        [InlineKeyboardButton(f"ðŸŸ¢ âž• Add {label} Key", callback_data=f"p_add_key:{provider}")],
+        [InlineKeyboardButton("ðŸ”´ ðŸ—‘ View / Delete Keys", callback_data=f"p_keys:{provider}")],
+        [InlineKeyboardButton(f"ðŸŸ¡ âš™ï¸ Manage {label} Services", callback_data=f"p_services:{provider}")],
+        [InlineKeyboardButton("ðŸ”µ ðŸŒ Search Country", callback_data=f"p_search:{provider}")],
         [InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_system_menu")],
     ]
     return text, InlineKeyboardMarkup(keyboard)
@@ -869,6 +869,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
 
+    # Any provider navigation cancels a pending provider text-input state.
+    # The specific add/search callbacks below create a fresh state again.
+    if query.data.startswith("p_") or query.data in {
+        "stex_control", "voltx_control", "zenex_control", "ye_control"
+    }:
+        PROVIDER_STATE.pop(user_id, None)
+
     if query.data == "check_join":
         is_joined = await check_force_join(user_id, context)
         if is_joined:
@@ -898,11 +905,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- System Control Hub Menu ---
     elif query.data == "adm_system_menu" and await is_admin(user_id):
         await query.answer()
-        sys_text = "âš™ï¸ **System Control Hub**\n\nà¦¨à¦¿à¦šà§‡à¦° à¦…à¦ªà¦¶à¦¨à¦—à§à¦²à§‹ à¦¥à§‡à¦•à§‡ à¦®à§à¦¯à¦¾à¦¨à§‡à¦œ à¦•à¦°à§à¦¨:"
+        sys_text = (
+            "âš™ï¸ **System Control Hub**\n\n"
+            "Manage each authorized SMS provider independently.\n"
+            "Provider keys, services, countries and ranges are kept separate."
+        )
         sys_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("StexSMS", callback_data="stex_control"), InlineKeyboardButton("Voltx", callback_data="voltx_control")],
-            [InlineKeyboardButton("Zenex", callback_data="zenex_control"), InlineKeyboardButton("YE SMS", callback_data="ye_control")],
-            [InlineKeyboardButton("ðŸ›¡ï¸ Provider OTP", callback_data="provider_otp_info"), InlineKeyboardButton("Emoji", callback_data="premium_emoji")],
+            [InlineKeyboardButton("âš¡ StexSMS", callback_data="p_control:stex"), InlineKeyboardButton("ðŸ’  Voltx", callback_data="p_control:voltx")],
+            [InlineKeyboardButton("ðŸ”· Zenex", callback_data="p_control:zenex"), InlineKeyboardButton("ðŸŸ¢ YE SMS", callback_data="p_control:yesms")],
+            [InlineKeyboardButton("ðŸ›¡ï¸ Provider OTP", callback_data="provider_otp_info"), InlineKeyboardButton("âœ¨ Premium UI", callback_data="premium_emoji")],
             [InlineKeyboardButton("Menu Design", callback_data="menu_design"), InlineKeyboardButton("Test", callback_data="test")],
             [InlineKeyboardButton("ðŸ‘‘ Admin Mgmt", callback_data="adm_mgmt_menu"), InlineKeyboardButton("âš™ï¸ Force Join", callback_data="adm_fj_menu")],
             [InlineKeyboardButton("ðŸ‘¥ User Mgmt", callback_data="adm_usermgmt_menu"), InlineKeyboardButton("ðŸ’¬ OTP Groups", callback_data="adm_otpgroup_menu")],
@@ -910,6 +921,17 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_back")]
         ])
         await query.message.edit_text(sys_text, parse_mode="Markdown", reply_markup=sys_keyboard)
+
+    elif query.data == "premium_emoji" and await is_admin(user_id):
+        await query.answer()
+        await query.message.edit_text(
+            "âœ¨ **Premium UI Emoji**\n\n"
+            "The provider panels use polished Unicode emoji for a premium look.\n"
+            "Telegram Premium custom/animated emoji require the actual custom-emoji IDs; they cannot be invented safely in source code."
+            ,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_system_menu")]])
+        )
 
     # --- Admin OTP Group Test Wizard ---
     elif query.data == "test" and await is_admin(user_id):
@@ -1643,6 +1665,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await query.message.edit_text(balance_text, parse_mode="Markdown", reply_markup=keyboard)
 
+
+    # --- Legacy provider button aliases (kept for already-sent keyboards) ---
+    elif query.data in {"stex_control", "voltx_control", "zenex_control", "ye_control"} and await is_admin(user_id):
+        provider = {
+            "stex_control": "stex",
+            "voltx_control": "voltx",
+            "zenex_control": "zenex",
+            "ye_control": "yesms",
+        }[query.data]
+        await query.answer()
+        text, markup = await provider_panel_markup(provider)
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=markup)
 
     # --- Dynamic Provider Control Panels ---
     elif query.data == "provider_otp_info" and await is_admin(user_id):
@@ -2874,7 +2908,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         if await is_admin(user_id) and text == "":
             pass
-        elif not update.message.document and not any(user_id in d for d in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_STATE]):
+        elif not update.message.document and not any(user_id in d for d in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_STATE, PROVIDER_STATE]):
             reply_markup = await build_main_menu(user_id)
             await update.message.reply_text("à¦¦à§Ÿà¦¾ à¦•à¦°à§‡ à¦¨à¦¿à¦šà§‡à¦° à¦¬à¦¾à¦Ÿà¦¨à¦—à§à¦²à§‹ à¦¬à§à¦¯à¦¬à¦¹à¦¾à¦° à¦•à¦°à§à¦¨ à¦…à¦¥à¦¬à¦¾ /start à¦¦à¦¿à¦¨à¥¤", reply_markup=reply_markup)
 
