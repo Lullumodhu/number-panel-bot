@@ -303,10 +303,28 @@ async def send_test_otp_to_configured_groups(context: ContextTypes.DEFAULT_TYPE,
 # AUTHORIZED MULTI-PROVIDER MANAGEMENT
 # ================================================================
 PROVIDERS = {
-    "stex": {"label": "StexSMS", "env": "STEXSMS", "base_url_required": True, "default_get_path": "/api/getnum"},
-    "voltx": {"label": "Voltx", "env": "VOLTX", "base_url_required": False, "default_get_path": "/get-number"},
-    "zenex": {"label": "Zenex", "env": "ZENEX", "base_url_required": True, "default_get_path": "/api/getnum"},
-    "yesms": {"label": "YE SMS", "env": "YESMS", "base_url_required": True, "default_get_path": "/api/getnum"},
+    # Providers whose documented get-number endpoint expects only {"range": "..."}.
+    "stex": {
+        "label": "StexSMS", "env": "STEXSMS", "base_url_required": True,
+        "default_get_path": "/api/getnum", "request_body_mode": "range_only",
+        "default_otp_path": "/api/success-otp-info",
+    },
+    # Voltx keeps the existing API-key-only behavior and payload format.
+    "voltx": {
+        "label": "Voltx", "env": "VOLTX", "base_url_required": False,
+        "default_get_path": "/get-number", "request_body_mode": "full",
+        "default_otp_path": "",
+    },
+    "zenex": {
+        "label": "Zenex", "env": "ZENEX", "base_url_required": True,
+        "default_get_path": "/api/getnum", "request_body_mode": "range_only",
+        "default_otp_path": "/api/success-otp-info",
+    },
+    "yesms": {
+        "label": "YE SMS", "env": "YESMS", "base_url_required": True,
+        "default_get_path": "/api/getnum", "request_body_mode": "range_only",
+        "default_otp_path": "/api/success-otp-info",
+    },
 }
 
 
@@ -431,11 +449,22 @@ async def provider_api_config(provider: str) -> dict:
     get_path = str(stored.get("get_path") or os.getenv(
         f"{prefix}_GET_NUMBER_PATH", meta.get("default_get_path", "/get-number")
     )).strip()
+
+    stored_otp_url = str(stored.get("otp_api_url") or "").strip()
+    env_otp_url = os.getenv(f"{prefix}_OTP_API_URL", "").strip()
+    otp_api_url = stored_otp_url or env_otp_url
+    if not otp_api_url and base_url and meta.get("default_otp_path"):
+        otp_api_url = base_url + "/" + str(meta["default_otp_path"]).lstrip("/")
+
     return {
         "base_url": base_url,
         "get_path": get_path,
         "get_method": str(stored.get("get_method") or os.getenv(f"{prefix}_GET_NUMBER_METHOD", "POST")).upper(),
+        "request_body_mode": str(stored.get("request_body_mode") or meta.get("request_body_mode", "full")).lower(),
         "validate_path": os.getenv(f"{prefix}_VALIDATE_KEY_PATH", ""),
+        "otp_api_url": otp_api_url,
+        "otp_method": str(stored.get("otp_method") or os.getenv(f"{prefix}_OTP_METHOD", "GET")).upper(),
+        "otp_poll_interval": max(2, int(stored.get("otp_poll_interval") or os.getenv("OTP_POLL_INTERVAL", "4"))),
         "webhook_secret": os.getenv(f"{prefix}_WEBHOOK_SECRET", ""),
         "auth_header": os.getenv(f"{prefix}_API_KEY_HEADER", "X-API-Key"),
         "webhook_port": int(os.getenv("WEBHOOK_PORT", "8080")),
@@ -511,25 +540,58 @@ def _request_number_sync(url, method, payload, api_key, auth_header):
 
 async def request_number_from_provider(provider: str, api_key: str, service: str, country: str, range_value: str):
     cfg = await provider_api_config(provider)
-    if not cfg["base_url"]:
-        return None, None, "Provider API base URL is not configured."
-    path = cfg["get_path"].format(
-        service=service, country=country, range=range_value, provider=provider
-    )
-    url = cfg["base_url"] + "/" + path.lstrip("/")
-    payload = {"service": service, "country": country, "range": range_value}
+    if provider_requires_base_url(provider) and not cfg["base_url"]:
+        return None, None, "Provider API Base URL is not configured."
+
+    # A provider can be API-key-only (Voltx) or Base-URL + API-key.
+    if cfg["base_url"]:
+        path = cfg["get_path"].format(
+            service=service, country=country, range=range_value, provider=provider
+        )
+        url = cfg["base_url"] + "/" + path.lstrip("/")
+    else:
+        # For API-key-only providers the configured path may itself be a full URL.
+        url = cfg["get_path"]
+        if not re.match(r"^https?://", url):
+            return None, None, "Provider API endpoint is not configured."
+
+    if cfg["request_body_mode"] == "range_only":
+        # Zenex-style endpoint shown in the supplied API documentation:
+        # POST /api/getnum with exactly {"range": "26134XXX"}.
+        payload = {"range": range_value}
+    else:
+        payload = {"service": service, "country": country, "range": range_value}
+
     try:
         data = await asyncio.to_thread(
             _request_number_sync, url, cfg["get_method"], payload, api_key, cfg["auth_header"]
         )
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        detail = f"HTTP {exc.code}" + (f": {body[:300]}" if body else "")
+        return None, None, detail
     except Exception as exc:
         return None, None, str(exc)
 
-    phone = _extract_first(data, ["phone_number", "phoneNumber", "phone", "number", "mobile"])
+    phone = _extract_first(data, [
+        "full_number", "phone_number", "phoneNumber", "phone",
+        "number", "mobile", "national_number", "no_plus_number"
+    ])
     order_id = _extract_first(data, ["order_id", "orderId", "order", "id", "request_id", "requestId"])
     if phone:
         return str(phone), str(order_id or uuid4()), None
-    return None, str(order_id or ""), "Provider response did not contain a phone number."
+
+    meta_code = _extract_first(data, ["code", "status_code"])
+    message = _extract_first(data, ["message", "error", "detail"])
+    detail = "Provider response did not contain a phone number."
+    if meta_code not in (None, ""):
+        detail += f" code={meta_code}"
+    if message not in (None, ""):
+        detail += f" | {message}"
+    return None, str(order_id or ""), detail
 
 
 async def create_provider_order(user_id: int, provider: str, key_doc: dict, service_doc: dict,
@@ -653,10 +715,12 @@ async def provider_panel_markup(provider: str):
         f"📁 Services: `{services}`  •  🌍 Countries: `{countries}`  •  📍 Ranges: `{ranges}`\n"
     )
     if provider_requires_base_url(provider):
-        text += f"🌐 Base URL: `{base_status}`\n\n"
+        text += f"🌐 Base URL: `{base_status}`\n"
     else:
-        text += "🔗 Connection: `API Key only`\n\n"
-    text += f"Manage your {label} API keys, services, countries and ranges below."
+        text += "🔗 Connection: `API Key only`\n"
+    otp_status = "Configured" if cfg.get("otp_api_url") else "Not configured"
+    text += f"📩 OTP API: `{otp_status}`\n\n"
+    text += f"Manage your {label} API keys, services, countries, ranges and OTP API below."
     keyboard = [
         [InlineKeyboardButton(f"🟢 ➕ Add {label} Key", callback_data=f"p_add_key:{provider}")],
         [InlineKeyboardButton("🔴 🗑 View / Delete Keys", callback_data=f"p_keys:{provider}")],
@@ -664,6 +728,7 @@ async def provider_panel_markup(provider: str):
     ]
     if provider_requires_base_url(provider):
         keyboard.append([InlineKeyboardButton("🔵 🌐 Set Base URL", callback_data=f"p_baseurl:{provider}")])
+    keyboard.append([InlineKeyboardButton("🟣 📩 Set OTP API", callback_data=f"p_otpapi:{provider}")])
     keyboard.extend([
         [InlineKeyboardButton("🔵 🔎 Search Country", callback_data=f"p_search:{provider}")],
         [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")],
@@ -718,6 +783,95 @@ async def provider_country_screen(provider: str, service_id: str, country_id: st
     keyboard.append([InlineKeyboardButton("🗑 Delete Entire Country", callback_data=f"p_del_country:{provider}:{service_id}:{country_id}")])
     keyboard.append([InlineKeyboardButton("🔙 Back", callback_data=f"p_service:{provider}:{service_id}")])
     return text, InlineKeyboardMarkup(keyboard)
+
+
+def _normalize_otp_events(payload):
+    """Return a flat list from common success-OTP API response shapes."""
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data")
+    if isinstance(data, dict):
+        otps = data.get("otps")
+        if isinstance(otps, list):
+            return otps
+        if isinstance(otps, dict):
+            return [otps]
+        if any(k in data for k in ("otp", "code", "number", "phone", "phone_number")):
+            return [data]
+    otps = payload.get("otps")
+    if isinstance(otps, list):
+        return otps
+    if isinstance(otps, dict):
+        return [otps]
+    if any(k in payload for k in ("otp", "code", "number", "phone", "phone_number")):
+        return [payload]
+    return []
+
+
+def _otp_event_fingerprint(provider: str, event: dict) -> str:
+    raw = "|".join(str(event.get(k, "")) for k in (
+        "id", "event_id", "number", "phone", "phone_number", "otp", "code", "sms", "message", "time"
+    ))
+    return hashlib.sha256(f"{provider}|{raw}".encode("utf-8")).hexdigest()
+
+
+def _poll_otp_api_sync(url: str, method: str, api_key: str, auth_header: str):
+    headers = {"Accept": "application/json", auth_header: api_key}
+    if auth_header.lower() != "authorization":
+        headers.setdefault("Authorization", f"Bearer {api_key}")
+    req = urllib.request.Request(url, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=20) as response:
+        raw = response.read().decode("utf-8", errors="replace")
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {"raw": raw}
+
+
+async def poll_provider_otp_apis(bot):
+    """Poll configured provider OTP APIs and forward only OTPs matching active orders."""
+    while True:
+        intervals = []
+        try:
+            for provider in PROVIDERS:
+                cfg = await provider_api_config(provider)
+                intervals.append(cfg.get("otp_poll_interval", 4))
+                otp_url = cfg.get("otp_api_url")
+                if not otp_url:
+                    continue
+                keys = await provider_keys_col.find({"provider": provider}).limit(1).to_list(length=1)
+                if not keys:
+                    continue
+                api_key = decrypt_api_key(keys[0].get("encrypted_key", ""))
+                if not api_key:
+                    continue
+                try:
+                    payload = await asyncio.to_thread(
+                        _poll_otp_api_sync, otp_url, cfg.get("otp_method", "GET"),
+                        api_key, cfg.get("auth_header", "X-API-Key")
+                    )
+                except Exception as exc:
+                    logging.warning("OTP API poll failed for %s: %s", provider, exc)
+                    continue
+
+                for event in _normalize_otp_events(payload):
+                    if not isinstance(event, dict):
+                        continue
+                    event = dict(event)
+                    if not event.get("event_id") and not event.get("id"):
+                        event["event_id"] = _otp_event_fingerprint(provider, event)
+                    await deliver_authorized_otp(bot, provider, event)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.exception("Provider OTP polling loop error")
+
+        sleep_for = min(intervals) if intervals else 4
+        await asyncio.sleep(max(2, sleep_for))
 
 
 class ProviderWebhookHandler(BaseHTTPRequestHandler):
@@ -1740,6 +1894,23 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"p_control:{provider}")]])
             )
 
+    elif query.data.startswith("p_otpapi:") and await is_admin(user_id):
+        provider = query.data.split(":", 1)[1]
+        PROVIDER_STATE[user_id] = {"step": "OTP_API", "provider": provider}
+        await query.answer()
+        current_cfg = await provider_api_config(provider)
+        current = current_cfg.get("otp_api_url") or "Auto/default OTP API not available"
+        await query.message.edit_text(
+            f"🟣 **Set {provider_label(provider)} OTP API**\n\n"
+            f"Current: `{current}`\n\n"
+            "Send the complete OTP API URL.\n"
+            "Example: `https://example.com/@public/api/success-otp-info`\n\n"
+            "The bot will poll this endpoint using the saved API key and send matched OTPs to the configured OTP group.\n"
+            "Send `OFF` to disable custom OTP polling and use the provider default, if available.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"p_control:{provider}")]])
+        )
+
     elif query.data.startswith("p_keys:") and await is_admin(user_id):
         provider = query.data.split(":", 1)[1]
         keys = await provider_keys_col.find({"provider": provider}).sort("created_at", 1).to_list(length=100)
@@ -1963,7 +2134,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = []
         for provider, svc in provider_service_docs:
             keyboard.append([InlineKeyboardButton(
-                f"{svc.get('emoji', service_emoji(svc['name']))} {svc['name']} • {provider_label(provider)}",
+                f"{svc.get('emoji', service_emoji(svc['name']))} {svc['name']} • {provider_label(provider)[:1].upper()}",
                 callback_data=f"psel_serv:{provider}:{svc['service_id']}"
             )])
         for s in services:
@@ -2193,6 +2364,35 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             del PROVIDER_STATE[user_id]
             await update.message.reply_text("✅ Base URL saved successfully.")
+            text_panel, markup = await provider_panel_markup(provider)
+            await update.message.reply_text(text_panel, parse_mode="Markdown", reply_markup=markup)
+            return
+
+        if step == "OTP_API":
+            otp_api_url = text.strip()
+            if otp_api_url.upper() == "OFF":
+                otp_api_url = ""
+            elif not re.match(r"^https?://[^\s]+$", otp_api_url):
+                await update.message.reply_text(
+                    "❌ Invalid OTP API URL. Send a complete http:// or https:// URL.",
+                    reply_markup=back_keyboard()
+                )
+                return
+            await provider_settings_col.update_one(
+                {"provider": provider},
+                {"$set": {
+                    "provider": provider,
+                    "otp_api_url": otp_api_url,
+                    "otp_method": "GET",
+                    "updated_at": now_iso(),
+                }},
+                upsert=True
+            )
+            del PROVIDER_STATE[user_id]
+            await update.message.reply_text(
+                "✅ OTP API saved successfully." if otp_api_url else "✅ Custom OTP API disabled.",
+                reply_markup=back_keyboard()
+            )
             text_panel, markup = await provider_panel_markup(provider)
             await update.message.reply_text(text_panel, parse_mode="Markdown", reply_markup=markup)
             return
@@ -3015,8 +3215,16 @@ async def main():
         await application.start()
         await application.updater.start_polling()
         start_provider_webhook_server(application.bot)
+        otp_poll_task = asyncio.create_task(poll_provider_otp_apis(application.bot))
         stop_signal = asyncio.Event()
-        await stop_signal.wait()
+        try:
+            await stop_signal.wait()
+        finally:
+            otp_poll_task.cancel()
+            try:
+                await otp_poll_task
+            except asyncio.CancelledError:
+                pass
 
     try:
         await main_runner()
