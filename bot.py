@@ -307,16 +307,15 @@ PROVIDERS = {
     "voltx": {"label": "Voltx", "env": "VOLTX", "base_url_required": False, "default_get_path": "/get-number"},
     "zenex": {"label": "Zenex", "env": "ZENEX", "base_url_required": True, "default_get_path": "/api/getnum"},
     "yesms": {"label": "YE SMS", "env": "YESMS", "base_url_required": True, "default_get_path": "/api/getnum"},
-    # Fast X OTP API shown in the developer panel.
-    # The API key is intentionally NOT hard-coded; add it from the admin panel.
+    # Fast X OTP panel: the documented API test uses only range in the JSON body.
     "fastx": {
-        "label": "Fast X OTP",
+        "label": "Fast X",
         "env": "FASTX",
-        "base_url_required": True,
+        "base_url_required": False,
         "default_base_url": "https://2eee7.com/@Access/@Bot/2eee7/@public",
         "default_get_path": "/api/getnum",
-        "auth_header": "X-API-Key",
-        "payload_mode": "range_only",
+        "default_get_method": "POST",
+        "default_auth_header": "X-API-Key",
     },
 }
 
@@ -438,19 +437,17 @@ async def provider_api_config(provider: str) -> dict:
     stored = await provider_settings_col.find_one({"provider": provider}) or {}
     stored_base_url = str(stored.get("base_url") or "").strip().rstrip("/")
     env_base_url = os.getenv(f"{prefix}_API_BASE_URL", "").strip().rstrip("/")
-    default_base_url = str(meta.get("default_base_url") or "").strip().rstrip("/")
-    base_url = stored_base_url or env_base_url or default_base_url
+    base_url = stored_base_url or env_base_url or str(meta.get("default_base_url", "")).strip().rstrip("/")
     get_path = str(stored.get("get_path") or os.getenv(
         f"{prefix}_GET_NUMBER_PATH", meta.get("default_get_path", "/get-number")
     )).strip()
     return {
         "base_url": base_url,
         "get_path": get_path,
-        "get_method": str(stored.get("get_method") or os.getenv(f"{prefix}_GET_NUMBER_METHOD", "POST")).upper(),
+        "get_method": str(stored.get("get_method") or os.getenv(f"{prefix}_GET_NUMBER_METHOD", meta.get("default_get_method", "POST"))).upper(),
         "validate_path": os.getenv(f"{prefix}_VALIDATE_KEY_PATH", ""),
         "webhook_secret": os.getenv(f"{prefix}_WEBHOOK_SECRET", ""),
-        "auth_header": os.getenv(f"{prefix}_API_KEY_HEADER", meta.get("auth_header", "X-API-Key")),
-        "payload_mode": str(stored.get("payload_mode") or meta.get("payload_mode", "service_country_range")),
+        "auth_header": os.getenv(f"{prefix}_API_KEY_HEADER", meta.get("default_auth_header", "X-API-Key")),
         "webhook_port": int(os.getenv("WEBHOOK_PORT", "8080")),
         "base_url_required": bool(meta.get("base_url_required", True)),
     }
@@ -523,43 +520,64 @@ def _request_number_sync(url, method, payload, api_key, auth_header):
 
 
 async def request_number_from_provider(provider: str, api_key: str, service: str, country: str, range_value: str):
+    """Allocate a number using the provider's documented Get Number API.
+
+    Fast X is intentionally kept identical to the API Test shown in the panel:
+      POST https://2eee7.com/@Access/@Bot/2eee7/@public/api/getnum
+      Header: X-API-Key: <key>
+      JSON:   {"range": "38091XXX"}
+
+    Service/country are used by the bot UI/database to select the configured
+    range, but Fast X does NOT receive them as API body fields.
+    """
     cfg = await provider_api_config(provider)
     if not cfg["base_url"]:
         return None, None, "Provider API base URL is not configured."
+
     path = cfg["get_path"].format(
         service=service, country=country, range=range_value, provider=provider
     )
     url = cfg["base_url"] + "/" + path.lstrip("/")
-    if cfg.get("payload_mode") == "range_only":
-        # Fast X OTP's documented get-number endpoint accepts only the range.
+
+    # Fast X API Test accepts ONLY the range field. Sending service/country
+    # here is not necessary and can break providers that validate the body.
+    if provider == "fastx":
         payload = {"range": range_value}
     else:
         payload = {"service": service, "country": country, "range": range_value}
+
     try:
         data = await asyncio.to_thread(
             _request_number_sync, url, cfg["get_method"], payload, api_key, cfg["auth_header"]
         )
+    except urllib.error.HTTPError as exc:
+        try:
+            error_body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            error_body = ""
+        return None, None, f"HTTP {exc.code}: {error_body or exc.reason}"
     except Exception as exc:
         return None, None, str(exc)
 
-    # Fast X returns meta.code=200 on success and the number as data.full_number.
-    # Preserve the provider's error code/message so an out-of-stock response is
-    # shown as an availability failure instead of being treated as a generic error.
-    if provider == "fastx" and isinstance(data, dict):
-        meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
-        code = meta.get("code")
-        if code is not None and str(code) != "200":
-            msg = _extract_first(data, ["message", "error", "detail"]) or f"Fast X API error code {code}"
-            return None, str(_extract_first(data, ["order_id", "orderId", "id"]) or ""), str(msg)
+    # Fast X returns: data.full_number and rid.
+    phone = _extract_first(data, [
+        "full_number", "phone_number", "phoneNumber", "phone",
+        "number", "mobile", "national_number", "no_plus_number"
+    ])
+    order_id = _extract_first(data, [
+        "rid", "order_id", "orderId", "order", "id", "request_id", "requestId"
+    ])
 
-    phone_keys = ["phone_number", "phoneNumber", "phone", "number", "mobile"]
-    if provider == "fastx":
-        phone_keys = ["full_number", "phone_number", "phoneNumber", "phone", "number", "mobile"]
-    phone = _extract_first(data, phone_keys)
-    order_id = _extract_first(data, ["order_id", "orderId", "order", "id", "request_id", "requestId"])
+    # Do not treat an API error/out-of-stock response as a successful number.
+    if isinstance(data, dict):
+        meta = data.get("meta")
+        if isinstance(meta, dict) and meta.get("code") not in (None, 200, "200"):
+            message = data.get("message") or meta.get("status") or "Provider API error"
+            return None, str(order_id or ""), f"HTTP/API {meta.get('code')}: {message}"
+
     if phone:
         return str(phone), str(order_id or uuid4()), None
-    return None, str(order_id or ""), str(_extract_first(data, ["message", "error", "detail"]) or "Provider response did not contain a phone number.")
+    return None, str(order_id or ""), str(data.get("message") if isinstance(data, dict) else "") or "Provider response did not contain a phone number."
 
 
 async def create_provider_order(user_id: int, provider: str, key_doc: dict, service_doc: dict,
@@ -966,7 +984,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sys_keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("⚡ StexSMS", callback_data="p_control:stex"), InlineKeyboardButton("💠 Voltx", callback_data="p_control:voltx")],
             [InlineKeyboardButton("🔷 Zenex", callback_data="p_control:zenex"), InlineKeyboardButton("🟢 YE SMS", callback_data="p_control:yesms")],
-            [InlineKeyboardButton("⚡ Fast X OTP", callback_data="p_control:fastx")],
+            [InlineKeyboardButton("🚀 Fast X", callback_data="p_control:fastx")],
             [InlineKeyboardButton("🛡️ Provider OTP", callback_data="provider_otp_info"), InlineKeyboardButton("✨ Premium UI", callback_data="premium_emoji")],
             [InlineKeyboardButton("Menu Design", callback_data="menu_design"), InlineKeyboardButton("Test", callback_data="test")],
             [InlineKeyboardButton("👑 Admin Mgmt", callback_data="adm_mgmt_menu"), InlineKeyboardButton("⚙️ Force Join", callback_data="adm_fj_menu")],
@@ -1761,16 +1779,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer()
             current_cfg = await provider_api_config(provider)
             current = current_cfg.get("base_url") or "Not configured"
-            fastx_note = (
-                "\nFor Fast X OTP, the documented endpoint is already preconfigured as `https://2eee7.com/@Access/@Bot/2eee7/@public`."
-                if provider == "fastx" else ""
-            )
             await query.message.edit_text(
                 f"🌐 **Set {provider_label(provider)} Base URL**\n\n"
                 f"Current: `{current}`\n\n"
                 "Send the provider Base URL.\n"
                 "Example: `https://example.com/@public/`\n\n"
-                "The number endpoint will use `/api/getnum` by default." + fastx_note,
+                "The number endpoint will use `/api/getnum` by default.",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"p_control:{provider}")]])
             )
