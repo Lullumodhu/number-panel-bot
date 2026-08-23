@@ -2,9 +2,25 @@ import os
 import logging
 import asyncio
 import re
+import json
+import base64
+import hashlib
+import random
+import threading
+import urllib.request
+import urllib.error
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from datetime import datetime, timezone
+from uuid import uuid4
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, CopyTextButton
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 import motor.motor_asyncio
+
+try:
+    from cryptography.fernet import Fernet, InvalidToken
+except ImportError:
+    Fernet = None
+    InvalidToken = Exception
 
 # Optional country detection. If unavailable, a calling-code fallback is used.
 try:
@@ -35,6 +51,14 @@ channels_col = db.channels
 forward_groups_col = db.forward_groups
 ranax_groups_col = db.ranax_groups
 
+# --- Dynamic Authorized Provider System ---
+provider_keys_col = db.provider_keys
+provider_services_col = db.provider_services
+provider_countries_col = db.provider_countries
+provider_ranges_col = db.provider_ranges
+provider_orders_col = db.provider_orders
+otp_events_col = db.otp_events
+
 # --- Permanent Links & Info ---
 MAIN_CHANNEL_URL = "https://t.me/Zentrix_Officiall"
 MAIN_CHANNEL_ID = "@Zentrix_Officiall"
@@ -57,6 +81,9 @@ USER_MANAGE_STATE = {}
 RANAX_ADD_STATE = {}
 MENU_EDIT_STATE = {}
 TEST_STATE = {}
+PROVIDER_STATE = {}
+EVENT_LOOP = None
+WEBHOOK_SERVER = None
 
 # --- Dynamic Settings Getter/Setter ---
 async def get_setting(key, default_val):
@@ -104,12 +131,12 @@ async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # --- Reply Keyboards ---
 async def main_menu_keyboard(user_id: int):
-    btn_get_num = await get_setting("btn_get_number", "📱 GET NUMBER")
-    btn_search_num = await get_setting("btn_search_number", "🔎 SEARCH NUMBER")
-    btn_traffic = await get_setting("btn_traffic", "🚦 TRAFFIC")
-    btn_refer = await get_setting("btn_refer", "👥 REFERRAL")
-    btn_balance = await get_setting("btn_balance", "💰 BALANCE")
-    btn_support = await get_setting("btn_support", "🆘 SUPPORT")
+    btn_get_num = await get_setting("btn_get_number", "ðŸ“± GET NUMBER")
+    btn_search_num = await get_setting("btn_search_number", "ðŸ”Ž SEARCH NUMBER")
+    btn_traffic = await get_setting("btn_traffic", "ðŸš¦ TRAFFIC")
+    btn_refer = await get_setting("btn_refer", "ðŸ‘¥ REFERRAL")
+    btn_balance = await get_setting("btn_balance", "ðŸ’° BALANCE")
+    btn_support = await get_setting("btn_support", "ðŸ†˜ SUPPORT")
 
     keyboard = [
         [KeyboardButton(btn_get_num), KeyboardButton(btn_search_num)],
@@ -121,11 +148,11 @@ async def main_menu_keyboard(user_id: int):
 async def build_main_menu(user_id: int):
     kb = await main_menu_keyboard(user_id)
     if await is_admin(user_id):
-        kb.append([KeyboardButton("👑 ADMIN PANEL")])
+        kb.append([KeyboardButton("ðŸ‘‘ ADMIN PANEL")])
     return ReplyKeyboardMarkup(kb, resize_keyboard=True)
 
 def back_keyboard():
-    return ReplyKeyboardMarkup([[KeyboardButton("🔙 Back")]], resize_keyboard=True)
+    return ReplyKeyboardMarkup([[KeyboardButton("ðŸ”™ Back")]], resize_keyboard=True)
 
 # --- Admin Main Control Panel Markup ---
 async def get_admin_panel_markup(user_id: int):
@@ -141,20 +168,20 @@ async def get_admin_panel_markup(user_id: int):
     total_files = len(files_list)
 
     panel_text = (
-        f"👑 **Admin Control Panel**\n\n"
-        f"📊 **Database Overview:**\n"
-        f"👥 Total Users: `{total_users}`\n"
-        f"📂 Total Files/Batches: `{total_files}`\n"
-        f"📱 Total Numbers: `{total_numbers}`\n"
-        f"🟢 Available: `{available_numbers}` | 🔄 Assigned: `{assigned_numbers}`\n"
-        f"🔴 Used Numbers: `{used_numbers}`\n\n"
-        f"নিচের অপশনগুলো থেকে সিলেক্ট করুন:"
+        f"ðŸ‘‘ **Admin Control Panel**\n\n"
+        f"ðŸ“Š **Database Overview:**\n"
+        f"ðŸ‘¥ Total Users: `{total_users}`\n"
+        f"ðŸ“‚ Total Files/Batches: `{total_files}`\n"
+        f"ðŸ“± Total Numbers: `{total_numbers}`\n"
+        f"ðŸŸ¢ Available: `{available_numbers}` | ðŸ”„ Assigned: `{assigned_numbers}`\n"
+        f"ðŸ”´ Used Numbers: `{used_numbers}`\n\n"
+        f"à¦¨à¦¿à¦šà§‡à¦° à¦…à¦ªà¦¶à¦¨à¦—à§à¦²à§‹ à¦¥à§‡à¦•à§‡ à¦¸à¦¿à¦²à§‡à¦•à§à¦Ÿ à¦•à¦°à§à¦¨:"
     )
 
     keyboard = [
-        [InlineKeyboardButton("🏆 Leaderboard", callback_data="adm_leaderboard"), InlineKeyboardButton("⚙️ System Hub", callback_data="adm_system_menu")],
-        [InlineKeyboardButton("📤 Upload", callback_data="adm_upload"), InlineKeyboardButton("🗑️ Delete", callback_data="adm_delete")],
-        [InlineKeyboardButton("📢 Broadcast", callback_data="adm_broadcast"), InlineKeyboardButton("❌ Close", callback_data="adm_close")]
+        [InlineKeyboardButton("ðŸ† Leaderboard", callback_data="adm_leaderboard"), InlineKeyboardButton("âš™ï¸ System Hub", callback_data="adm_system_menu")],
+        [InlineKeyboardButton("ðŸ“¤ Upload", callback_data="adm_upload"), InlineKeyboardButton("ðŸ—‘ï¸ Delete", callback_data="adm_delete")],
+        [InlineKeyboardButton("ðŸ“¢ Broadcast", callback_data="adm_broadcast"), InlineKeyboardButton("âŒ Close", callback_data="adm_close")]
     ]
     return panel_text, InlineKeyboardMarkup(keyboard)
 
@@ -199,22 +226,22 @@ def detect_test_country(phone: str) -> str:
 def country_flag(country: str) -> str:
     country = (country or "UN").upper()
     if len(country) != 2 or not country.isalpha():
-        return "🌍"
+        return "ðŸŒ"
     return "".join(chr(127397 + ord(c)) for c in country)
 
 def service_icon(service: str) -> str:
     s = service.lower().replace("'", "").replace(" ", "")
     icons = {
-        "whatsapp": "🟢", "facebook": "🔵", "telegram": "🔷",
-        "instagram": "🟣", "discord": "🟪", "imo": "🔵",
-        "google": "🔴", "tiktok": "⚫", "twitter": "🐦",
+        "whatsapp": "ðŸŸ¢", "facebook": "ðŸ”µ", "telegram": "ðŸ”·",
+        "instagram": "ðŸŸ£", "discord": "ðŸŸª", "imo": "ðŸ”µ",
+        "google": "ðŸ”´", "tiktok": "âš«", "twitter": "ðŸ¦",
     }
-    return icons.get(s, "📱")
+    return icons.get(s, "ðŸ“±")
 
 def mask_test_phone(phone: str) -> str:
     if len(phone) <= 8:
         return phone
-    return f"{phone[:5]}••{phone[-4:]}"
+    return f"{phone[:5]}â€¢â€¢{phone[-4:]}"
 
 async def build_test_otp_keyboard(context: ContextTypes.DEFAULT_TYPE, otp: str):
     channel_url = await get_setting("otp_button_link", MAIN_CHANNEL_URL)
@@ -227,19 +254,19 @@ async def build_test_otp_keyboard(context: ContextTypes.DEFAULT_TYPE, otp: str):
 
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🔔 Channel", url=channel_url),
-            InlineKeyboardButton(f"🛡️ 📋 {otp}", copy_text=CopyTextButton(text=otp)),
+            InlineKeyboardButton("ðŸ”” Channel", url=channel_url),
+            InlineKeyboardButton(f"ðŸ›¡ï¸ ðŸ“‹ {otp}", copy_text=CopyTextButton(text=otp)),
         ],
-        [InlineKeyboardButton("📞 Get Number ↗", url=get_number_url)]
+        [InlineKeyboardButton("ðŸ“ž Get Number â†—", url=get_number_url)]
     ])
 
 def build_test_otp_text(service: str, phone: str, otp: str, language: str, country: str) -> str:
-    # 'TEST' লেখাটি সম্পূর্ণ বাদ দিয়ে ফরম্যাট করা হয়েছে যাতে সাধারণ ব্যবহারকারীদের চোখে না পড়ে।
+    # 'TEST' à¦²à§‡à¦–à¦¾à¦Ÿà¦¿ à¦¸à¦®à§à¦ªà§‚à¦°à§à¦£ à¦¬à¦¾à¦¦ à¦¦à¦¿à§Ÿà§‡ à¦«à¦°à¦®à§à¦¯à¦¾à¦Ÿ à¦•à¦°à¦¾ à¦¹à§Ÿà§‡à¦›à§‡ à¦¯à¦¾à¦¤à§‡ à¦¸à¦¾à¦§à¦¾à¦°à¦£ à¦¬à§à¦¯à¦¬à¦¹à¦¾à¦°à¦•à¦¾à¦°à§€à¦¦à§‡à¦° à¦šà§‹à¦–à§‡ à¦¨à¦¾ à¦ªà§œà§‡à¥¤
     return (
         f"{country_flag(country)} **{country}** | "
         f"{service_icon(service)} **{service}** `{mask_test_phone(phone)}` | "
-        f"🔊 **{language}**\n\n"
-        f"🛡️ **OTP:** `{otp}`"
+        f"ðŸ”Š **{language}**\n\n"
+        f"ðŸ›¡ï¸ **OTP:** `{otp}`"
     )
 
 async def send_test_otp_to_configured_groups(context: ContextTypes.DEFAULT_TYPE,
@@ -270,11 +297,489 @@ async def send_test_otp_to_configured_groups(context: ContextTypes.DEFAULT_TYPE,
 
     return success, failed, len(target_ids)
 
+
+# ================================================================
+# AUTHORIZED MULTI-PROVIDER MANAGEMENT
+# ================================================================
+PROVIDERS = {
+    "stex": {"label": "StexSMS", "env": "STEXSMS"},
+    "voltx": {"label": "Voltx", "env": "VOLTX"},
+    "zenex": {"label": "Zenex", "env": "ZENEX"},
+    "yesms": {"label": "YE SMS", "env": "YESMS"},
+}
+
+
+def provider_label(provider: str) -> str:
+    return PROVIDERS.get(provider, {}).get("label", provider.upper())
+
+
+def provider_env_prefix(provider: str) -> str:
+    return PROVIDERS.get(provider, {}).get("env", provider.upper())
+
+
+def normalize_name(value: str, max_len: int = 64) -> str:
+    value = re.sub(r"\s+", " ", (value or "").strip())
+    return value[:max_len]
+
+
+def normalize_service(value: str) -> str:
+    return normalize_name(value).upper()
+
+
+def normalize_country(value: str) -> str:
+    return normalize_name(value).title()
+
+
+def normalize_range(value: str) -> str:
+    value = re.sub(r"[^0-9+*#A-Za-z_-]", "", (value or "").strip())
+    return value[:32]
+
+
+def service_emoji(service: str) -> str:
+    s = (service or "").lower().replace(" ", "").replace("'", "")
+    icons = {
+        "facebook": "ðŸ“˜", "whatsapp": "ðŸ’¬", "telegram": "âœˆï¸",
+        "instagram": "ðŸ“¸", "google": "ðŸ”Ž", "youtube": "â–¶ï¸",
+        "tiktok": "ðŸŽµ", "twitter": "ðŸ¦", "x": "âœ–ï¸", "discord": "ðŸŸ£",
+        "imo": "ðŸ’™", "snapchat": "ðŸ‘»", "microsoft": "ðŸªŸ", "outlook": "ðŸ“§",
+        "apple": "ðŸŽ", "uber": "ðŸš•", "airbnb": "ðŸ ", "linkedin": "ðŸ’¼",
+    }
+    return icons.get(s, "ðŸ”¹")
+
+
+def country_code_from_name(name: str) -> str:
+    known = {
+        "guinea": "GN", "bangladesh": "BD", "india": "IN", "united states": "US",
+        "united kingdom": "GB", "malaysia": "MY", "indonesia": "ID", "singapore": "SG",
+        "thailand": "TH", "vietnam": "VN", "philippines": "PH", "pakistan": "PK",
+        "afghanistan": "AF", "sri lanka": "LK", "myanmar": "MM", "japan": "JP",
+        "south korea": "KR", "china": "CN", "russia": "RU", "turkey": "TR",
+        "france": "FR", "germany": "DE", "italy": "IT", "spain": "ES",
+        "netherlands": "NL", "belgium": "BE", "switzerland": "CH", "austria": "AT",
+        "denmark": "DK", "sweden": "SE", "norway": "NO", "poland": "PL",
+        "greece": "GR", "portugal": "PT", "ireland": "IE", "finland": "FI",
+        "ukraine": "UA", "czech republic": "CZ", "hungary": "HU", "romania": "RO",
+        "israel": "IL", "united arab emirates": "AE", "saudi arabia": "SA",
+        "qatar": "QA", "bahrain": "BH", "kuwait": "KW", "oman": "OM",
+        "yemen": "YE", "jordan": "JO", "lebanon": "LB", "syria": "SY",
+        "iraq": "IQ", "egypt": "EG", "morocco": "MA", "algeria": "DZ",
+        "tunisia": "TN", "libya": "LY", "nigeria": "NG", "kenya": "KE",
+        "tanzania": "TZ", "uganda": "UG", "south africa": "ZA", "australia": "AU",
+        "new zealand": "NZ",
+    }
+    return known.get((name or "").strip().lower(), "UN")
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def key_cipher():
+    if Fernet is None:
+        return None
+    secret = os.getenv("API_KEY_ENCRYPTION_SECRET") or BOT_TOKEN or MONGO_URI or "zentrix-default-secret"
+    digest = hashlib.sha256(secret.encode("utf-8")).digest()
+    return Fernet(base64.urlsafe_b64encode(digest))
+
+
+def encrypt_api_key(value: str) -> str:
+    cipher = key_cipher()
+    if cipher:
+        return "fernet:" + cipher.encrypt(value.encode()).decode()
+    return "plain:" + value
+
+
+def decrypt_api_key(value: str) -> str:
+    if not value:
+        return ""
+    if value.startswith("fernet:"):
+        cipher = key_cipher()
+        if not cipher:
+            return ""
+        try:
+            return cipher.decrypt(value[7:].encode()).decode()
+        except InvalidToken:
+            return ""
+    if value.startswith("plain:"):
+        return value[6:]
+    return value
+
+
+def mask_secret(value: str) -> str:
+    value = value or ""
+    if len(value) <= 8:
+        return "â€¢" * len(value)
+    return value[:4] + "â€¢â€¢â€¢â€¢" + value[-4:]
+
+
+async def provider_key_count(provider: str) -> int:
+    return await provider_keys_col.count_documents({"provider": provider})
+
+
+async def provider_configured_services(provider: str):
+    return await provider_services_col.find({"provider": provider}).sort("name", 1).to_list(length=200)
+
+
+async def provider_api_config(provider: str) -> dict:
+    prefix = provider_env_prefix(provider)
+    return {
+        "base_url": os.getenv(f"{prefix}_API_BASE_URL", "").rstrip("/"),
+        "get_path": os.getenv(f"{prefix}_GET_NUMBER_PATH", "/get-number"),
+        "get_method": os.getenv(f"{prefix}_GET_NUMBER_METHOD", "POST").upper(),
+        "validate_path": os.getenv(f"{prefix}_VALIDATE_KEY_PATH", ""),
+        "webhook_secret": os.getenv(f"{prefix}_WEBHOOK_SECRET", ""),
+        "auth_header": os.getenv(f"{prefix}_API_KEY_HEADER", "X-API-Key"),
+        "webhook_port": int(os.getenv("WEBHOOK_PORT", "8080")),
+    }
+
+
+async def validate_provider_key(provider: str, api_key: str) -> bool:
+    """Validate only when a documented validation endpoint is configured.
+    Without one, a non-empty key is accepted and stored; this avoids inventing
+    undocumented provider API calls.
+    """
+    if not api_key or len(api_key) > 512:
+        return False
+    cfg = await provider_api_config(provider)
+    if not cfg["validate_path"] or not cfg["base_url"]:
+        return True
+    url = cfg["base_url"] + "/" + cfg["validate_path"].lstrip("/")
+    return await asyncio.to_thread(_provider_http_check, url, api_key, cfg["auth_header"])
+
+
+def _provider_http_check(url: str, api_key: str, auth_header: str) -> bool:
+    try:
+        req = urllib.request.Request(url, method="GET", headers={auth_header: api_key, "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as response:
+            return 200 <= response.status < 300
+    except Exception:
+        return False
+
+
+def _extract_first(data, keys):
+    if isinstance(data, dict):
+        for key in keys:
+            if key in data and data[key] not in (None, ""):
+                return data[key]
+        for value in data.values():
+            found = _extract_first(value, keys)
+            if found not in (None, ""):
+                return found
+    elif isinstance(data, list):
+        for value in data:
+            found = _extract_first(value, keys)
+            if found not in (None, ""):
+                return found
+    return None
+
+
+def _request_number_sync(url, method, payload, api_key, auth_header):
+    headers = {"Accept": "application/json", auth_header: api_key}
+    if auth_header.lower() != "authorization":
+        headers.setdefault("Authorization", f"Bearer {api_key}")
+    body = None
+    if method == "GET":
+        from urllib.parse import urlencode
+        url += ("&" if "?" in url else "?") + urlencode(payload)
+    else:
+        body = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=body, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=25) as response:
+        raw = response.read().decode("utf-8", errors="replace")
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {"raw": raw}
+
+
+async def request_number_from_provider(provider: str, api_key: str, service: str, country: str, range_value: str):
+    cfg = await provider_api_config(provider)
+    if not cfg["base_url"]:
+        return None, None, "Provider API base URL is not configured."
+    path = cfg["get_path"].format(
+        service=service, country=country, range=range_value, provider=provider
+    )
+    url = cfg["base_url"] + "/" + path.lstrip("/")
+    payload = {"service": service, "country": country, "range": range_value}
+    try:
+        data = await asyncio.to_thread(
+            _request_number_sync, url, cfg["get_method"], payload, api_key, cfg["auth_header"]
+        )
+    except Exception as exc:
+        return None, None, str(exc)
+
+    phone = _extract_first(data, ["phone_number", "phoneNumber", "phone", "number", "mobile"])
+    order_id = _extract_first(data, ["order_id", "orderId", "order", "id", "request_id", "requestId"])
+    if phone:
+        return str(phone), str(order_id or uuid4()), None
+    return None, str(order_id or ""), "Provider response did not contain a phone number."
+
+
+async def create_provider_order(user_id: int, provider: str, key_doc: dict, service_doc: dict,
+                                country_doc: dict, range_doc: dict, phone: str, external_order_id: str):
+    order_id = str(external_order_id or uuid4())
+    doc = {
+        "order_id": order_id,
+        "provider": provider,
+        "api_key_id": key_doc.get("key_id"),
+        "service_id": service_doc.get("service_id"),
+        "service_name": service_doc.get("name"),
+        "country_id": country_doc.get("country_id"),
+        "country": country_doc.get("name"),
+        "country_code": country_doc.get("code", "UN"),
+        "range_id": range_doc.get("range_id"),
+        "range": range_doc.get("range"),
+        "phone_number": phone,
+        "user_id": user_id,
+        "status": "active",
+        "created_at": now_iso(),
+        "last_otp_event_id": None,
+    }
+    await provider_orders_col.update_one({"order_id": order_id}, {"$set": doc}, upsert=True)
+    return order_id
+
+
+async def provider_targets():
+    groups = await forward_groups_col.find({}).to_list(length=50)
+    ids = [str(g.get("group_id")).strip() for g in groups if g.get("group_id")]
+    fallback = os.getenv("OTP_GROUP_ID", "").strip()
+    return ids or ([fallback] if fallback else [])
+
+
+async def deliver_authorized_otp(bot, provider: str, event: dict):
+    """Deliver only provider-supplied events matched to an active order."""
+    event_id = str(event.get("event_id") or event.get("id") or uuid4())
+    phone = str(event.get("phone_number") or event.get("phone") or event.get("number") or "").strip()
+    external_order_id = str(event.get("order_id") or event.get("orderId") or "").strip()
+    otp = str(event.get("otp") or event.get("code") or "").strip()
+    sms_text = str(event.get("message") or event.get("sms") or event.get("text") or otp).strip()
+    if not otp and not sms_text:
+        return False, "missing_otp"
+
+    existing = await otp_events_col.find_one({"provider": provider, "event_id": event_id})
+    if existing:
+        return False, "duplicate"
+
+    query = {"provider": provider, "status": "active"}
+    if external_order_id:
+        query["order_id"] = external_order_id
+    elif phone:
+        query["phone_number"] = phone
+    else:
+        return False, "no_match_key"
+
+    order = await provider_orders_col.find_one(query)
+    if not order and phone and external_order_id:
+        order = await provider_orders_col.find_one({"provider": provider, "status": "active", "phone_number": phone})
+    if not order:
+        await otp_events_col.insert_one({"provider": provider, "event_id": event_id, "status": "unmatched", "created_at": now_iso()})
+        return False, "unmatched"
+
+    await otp_events_col.insert_one({
+        "provider": provider, "event_id": event_id, "order_id": order["order_id"],
+        "user_id": order["user_id"], "phone_number": order.get("phone_number"),
+        "created_at": now_iso(), "status": "processed",
+    })
+
+    await provider_orders_col.update_one(
+        {"_id": order["_id"]},
+        {"$set": {"status": "completed", "last_otp_event_id": event_id, "otp_received_at": now_iso()}}
+    )
+
+    service = order.get("service_name", "Unknown")
+    country = order.get("country", "Unknown")
+    country_code = order.get("country_code", "UN")
+    masked_phone = mask_test_phone(order.get("phone_number", phone))
+    provider_name = provider_label(provider)
+    otp_text = otp or sms_text
+    group_text = (
+        "ðŸ”” **NEW OTP RECEIVED**\n\n"
+        f"ðŸ“± Service: `{service}`\n"
+        f"ðŸŒ Country: {country_flag(country_code)} `{country}`\n"
+        f"ðŸ“ž Number: `{masked_phone}`\n"
+        f"ðŸ”¢ OTP: `{otp_text}`\n"
+        f"ðŸ†” Order: `#{order['order_id']}`\n"
+        f"âš¡ Provider: `{provider_name}`"
+    )
+    user_text = (
+        "ðŸ”” **OTP RECEIVED**\n\n"
+        f"ðŸ“± Service: `{service}`\n"
+        f"ðŸŒ Country: {country_flag(country_code)} `{country}`\n"
+        f"ðŸ”¢ OTP: `{otp_text}`\n"
+        f"ðŸ†” Order: `#{order['order_id']}`\n"
+        f"âš¡ Provider: `{provider_name}`"
+    )
+
+    for target_id in await provider_targets():
+        try:
+            await bot.send_message(chat_id=target_id, text=group_text, parse_mode="Markdown")
+        except Exception:
+            pass
+    try:
+        await bot.send_message(chat_id=order["user_id"], text=user_text, parse_mode="Markdown")
+    except Exception:
+        pass
+    return True, "processed"
+
+
+async def provider_panel_markup(provider: str):
+    label = provider_label(provider)
+    keys = await provider_key_count(provider)
+    services = await provider_services_col.count_documents({"provider": provider})
+    countries = await provider_countries_col.count_documents({"provider": provider})
+    ranges = await provider_ranges_col.count_documents({"provider": provider})
+    text = (
+        f"âš¡ **{label} Control Panel**\n\n"
+        f"Total API Keys: `{keys}`\n"
+        f"Services: `{services}`  â€¢  Countries: `{countries}`  â€¢  Ranges: `{ranges}`\n\n"
+        f"Manage your {label} API keys, services, countries and ranges below."
+    )
+    keyboard = [
+        [InlineKeyboardButton(f"âž• Add {label} Key", callback_data=f"p_add_key:{provider}")],
+        [InlineKeyboardButton("ðŸ—‘ View/Del Keys", callback_data=f"p_keys:{provider}")],
+        [InlineKeyboardButton(f"âš™ï¸ Manage {label} Services", callback_data=f"p_services:{provider}")],
+        [InlineKeyboardButton("ðŸŒ Search Country", callback_data=f"p_search:{provider}")],
+        [InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_system_menu")],
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+async def provider_services_markup(provider: str):
+    services = await provider_configured_services(provider)
+    text = f"âš¡ **{provider_label(provider)} Services Manager**\n\nManage your API-based dynamic services below:"
+    keyboard = []
+    for svc in services:
+        sid = svc["service_id"]
+        keyboard.append([InlineKeyboardButton(f"{svc.get('emoji', service_emoji(svc['name']))} {svc['name']}", callback_data=f"p_service:{provider}:{sid}")])
+    keyboard.append([InlineKeyboardButton("âž• Add New Service", callback_data=f"p_add_service:{provider}")])
+    keyboard.append([InlineKeyboardButton("ðŸ”™ Back", callback_data=f"p_control:{provider}")])
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+async def provider_service_screen(provider: str, service_id: str):
+    svc = await provider_services_col.find_one({"provider": provider, "service_id": service_id})
+    if not svc:
+        return "âŒ Service not found.", InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data=f"p_services:{provider}")]])
+    countries = await provider_countries_col.find({"provider": provider, "service_id": service_id}).sort("name", 1).to_list(length=200)
+    text = f"ðŸ“ **Service: {svc['name']}**\n\nManage countries for this service:"
+    keyboard = []
+    for country in countries:
+        keyboard.append([InlineKeyboardButton(
+            f"{country.get('flag', country_flag(country.get('code', 'UN')))} {country['name']}",
+            callback_data=f"p_country:{provider}:{service_id}:{country['country_id']}"
+        )])
+    keyboard.append([InlineKeyboardButton("âž• Add Country", callback_data=f"p_add_country:{provider}:{service_id}")])
+    keyboard.append([InlineKeyboardButton("ðŸ—‘ Delete Service", callback_data=f"p_del_service:{provider}:{service_id}")])
+    keyboard.append([InlineKeyboardButton("ðŸ”™ Back", callback_data=f"p_services:{provider}")])
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+async def provider_country_screen(provider: str, service_id: str, country_id: str):
+    svc = await provider_services_col.find_one({"provider": provider, "service_id": service_id})
+    country = await provider_countries_col.find_one({"provider": provider, "country_id": country_id})
+    if not svc or not country:
+        return "âŒ Country configuration not found.", InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data=f"p_services:{provider}")]])
+    ranges = await provider_ranges_col.find({"provider": provider, "service_id": service_id, "country_id": country_id}).sort("range", 1).to_list(length=500)
+    text = (
+        f"ðŸ“ **Service: {svc['name']} | Country: {country['name']}**\n\n"
+        f"Total Ranges: `{len(ranges)}`\n\n"
+        "Click on a range below to delete it, or add a new one."
+    )
+    keyboard = []
+    for r in ranges:
+        keyboard.append([InlineKeyboardButton(f"ðŸ“ {r['range']}", callback_data=f"p_del_range:{provider}:{r['range_id']}")])
+    keyboard.append([InlineKeyboardButton("âž• Add Range", callback_data=f"p_add_range:{provider}:{service_id}:{country_id}")])
+    keyboard.append([InlineKeyboardButton("ðŸ—‘ Delete Entire Country", callback_data=f"p_del_country:{provider}:{service_id}:{country_id}")])
+    keyboard.append([InlineKeyboardButton("ðŸ”™ Back", callback_data=f"p_service:{provider}:{service_id}")])
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+class ProviderWebhookHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        return
+
+    def do_POST(self):
+        global EVENT_LOOP
+        match = re.fullmatch(r"/webhook/(stex|voltx|zenex|yesms)", self.path.split("?", 1)[0])
+        if not match or EVENT_LOOP is None:
+            self.send_response(404)
+            self.end_headers()
+            return
+        provider = match.group(1)
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length)
+            payload = json.loads(raw.decode("utf-8"))
+            secret = self.headers.get("X-Webhook-Secret", "")
+            expected = os.getenv(f"{provider_env_prefix(provider)}_WEBHOOK_SECRET", "")
+            body_secret = str(payload.get("secret", "")) if isinstance(payload, dict) else ""
+            if not expected:
+                self.send_response(503)
+                self.end_headers()
+                return
+            if secret != expected and body_secret != expected:
+                self.send_response(401)
+                self.end_headers()
+                return
+            if not isinstance(payload, dict):
+                raise ValueError("JSON object required")
+            future = asyncio.run_coroutine_threadsafe(_handle_webhook_payload(provider, payload), EVENT_LOOP)
+            future.result(timeout=20)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+        except Exception:
+            self.send_response(400)
+            self.end_headers()
+
+
+async def _handle_webhook_payload(provider: str, payload: dict):
+    # Some providers wrap the event in data/event/result.
+    event = payload.get("event") if isinstance(payload.get("event"), dict) else payload
+    if isinstance(event.get("data"), dict):
+        merged = dict(event)
+        merged.update(event["data"])
+        event = merged
+    bot = _WEBHOOK_BOT
+    if bot is not None:
+        await deliver_authorized_otp(bot, provider, event)
+
+
+_WEBHOOK_BOT = None
+
+
+def start_provider_webhook_server(bot):
+    global EVENT_LOOP, WEBHOOK_SERVER, _WEBHOOK_BOT
+    EVENT_LOOP = asyncio.get_running_loop()
+    _WEBHOOK_BOT = bot
+    port = int(os.getenv("WEBHOOK_PORT", "8080"))
+    try:
+        WEBHOOK_SERVER = ThreadingHTTPServer(("0.0.0.0", port), ProviderWebhookHandler)
+        thread = threading.Thread(target=WEBHOOK_SERVER.serve_forever, daemon=True)
+        thread.start()
+        logging.info("Authorized provider webhook server listening on port %s", port)
+    except Exception as exc:
+        logging.warning("Provider webhook server not started: %s", exc)
+
+
+def stop_provider_webhook_server():
+    global WEBHOOK_SERVER
+    if WEBHOOK_SERVER:
+        try:
+            WEBHOOK_SERVER.shutdown()
+            WEBHOOK_SERVER.server_close()
+        except Exception:
+            pass
+        WEBHOOK_SERVER = None
+
 # --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
-    for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_STATE]:
+    for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_STATE, PROVIDER_STATE]:
         if user.id in state_dict:
             del state_dict[user.id]
 
@@ -304,7 +809,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await context.bot.send_message(
                     chat_id=referrer_id,
-                    text=f"🎉 **New Referral!**\n\nআপনার লিংকের মাধ্যমে একজন নতুন ইউজার জয়েন করেছে এবং আপনি বোনাস পেয়েছেন: `+{ref_bonus}৳`",
+                    text=f"ðŸŽ‰ **New Referral!**\n\nà¦†à¦ªà¦¨à¦¾à¦° à¦²à¦¿à¦‚à¦•à§‡à¦° à¦®à¦¾à¦§à§à¦¯à¦®à§‡ à¦à¦•à¦œà¦¨ à¦¨à¦¤à§à¦¨ à¦‡à¦‰à¦œà¦¾à¦° à¦œà§Ÿà§‡à¦¨ à¦•à¦°à§‡à¦›à§‡ à¦à¦¬à¦‚ à¦†à¦ªà¦¨à¦¿ à¦¬à§‹à¦¨à¦¾à¦¸ à¦ªà§‡à§Ÿà§‡à¦›à§‡à¦¨: `+{ref_bonus}à§³`",
                     parse_mode="Markdown"
                 )
             except Exception:
@@ -317,7 +822,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_doc = await users_col.find_one({"user_id": user.id})
     if user_doc and user_doc.get("banned", False):
-        await update.message.reply_text("❌ আপনি এই বট থেকে ব্যান হয়েছেন。", parse_mode="Markdown")
+        await update.message.reply_text("âŒ à¦†à¦ªà¦¨à¦¿ à¦à¦‡ à¦¬à¦Ÿ à¦¥à§‡à¦•à§‡ à¦¬à§à¦¯à¦¾à¦¨ à¦¹à§Ÿà§‡à¦›à§‡à¦¨ã€‚", parse_mode="Markdown")
         return
 
     is_joined = await check_force_join(user.id, context)
@@ -326,17 +831,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         inline_kb = []
         if channels_list:
             for ch in channels_list:
-                inline_kb.append([InlineKeyboardButton(f"📢 Join {ch.get('name')}", url=ch.get('url'))])
+                inline_kb.append([InlineKeyboardButton(f"ðŸ“¢ Join {ch.get('name')}", url=ch.get('url'))])
         else:
-            inline_kb.append([InlineKeyboardButton("📢 Join Main Channel", url=MAIN_CHANNEL_URL)])
-            inline_kb.append([InlineKeyboardButton("📢 Join Update Channel", url=UPDATE_CHANNEL_URL)])
+            inline_kb.append([InlineKeyboardButton("ðŸ“¢ Join Main Channel", url=MAIN_CHANNEL_URL)])
+            inline_kb.append([InlineKeyboardButton("ðŸ“¢ Join Update Channel", url=UPDATE_CHANNEL_URL)])
             
-        inline_kb.append([InlineKeyboardButton("💬 Join OTP Group", url=OTP_GROUP_URL)])
-        inline_kb.append([InlineKeyboardButton("✅ Joined / Check", callback_data="check_join")])
+        inline_kb.append([InlineKeyboardButton("ðŸ’¬ Join OTP Group", url=OTP_GROUP_URL)])
+        inline_kb.append([InlineKeyboardButton("âœ… Joined / Check", callback_data="check_join")])
 
         await update.message.reply_text(
-            "⚠️ **বটটি ব্যবহার করতে হলে অবশ্যই আমাদের চ্যানেল এবং গ্রুপগুলোতে জয়েন থাকতে হবে!**\n\n"
-            "দয়া করে নিচের লিংকগুলোতে জয়েন করুন এবং তারপর চেক করুন।",
+            "âš ï¸ **à¦¬à¦Ÿà¦Ÿà¦¿ à¦¬à§à¦¯à¦¬à¦¹à¦¾à¦° à¦•à¦°à¦¤à§‡ à¦¹à¦²à§‡ à¦…à¦¬à¦¶à§à¦¯à¦‡ à¦†à¦®à¦¾à¦¦à§‡à¦° à¦šà§à¦¯à¦¾à¦¨à§‡à¦² à¦à¦¬à¦‚ à¦—à§à¦°à§à¦ªà¦—à§à¦²à§‹à¦¤à§‡ à¦œà§Ÿà§‡à¦¨ à¦¥à¦¾à¦•à¦¤à§‡ à¦¹à¦¬à§‡!**\n\n"
+            "à¦¦à§Ÿà¦¾ à¦•à¦°à§‡ à¦¨à¦¿à¦šà§‡à¦° à¦²à¦¿à¦‚à¦•à¦—à§à¦²à§‹à¦¤à§‡ à¦œà§Ÿà§‡à¦¨ à¦•à¦°à§à¦¨ à¦à¦¬à¦‚ à¦¤à¦¾à¦°à¦ªà¦° à¦šà§‡à¦• à¦•à¦°à§à¦¨à¥¤",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(inline_kb)
         )
@@ -345,13 +850,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     custom_welcome = await get_setting("start_menu_text", None)
     if not custom_welcome:
         welcome_text = (
-            f"🌐 **NUMBER PANEL**\n\n"
-            f"👋 Welcome, **{user.first_name}**\n"
-            f"🚀 Premium Number Management System\n\n"
-            f"📱 Manage your available numbers\n"
-            f"🌍 Browse services & countries\n"
-            f"💰 Balance & referral management\n\n"
-            f"⚡ Fast • Simple • Secure"
+            f"ðŸŒ **NUMBER PANEL**\n\n"
+            f"ðŸ‘‹ Welcome, **{user.first_name}**\n"
+            f"ðŸš€ Premium Number Management System\n\n"
+            f"ðŸ“± Manage your available numbers\n"
+            f"ðŸŒ Browse services & countries\n"
+            f"ðŸ’° Balance & referral management\n\n"
+            f"âš¡ Fast â€¢ Simple â€¢ Secure"
         )
     else:
         welcome_text = custom_welcome.format(first_name=user.first_name, username=user.username or "N/A", user_id=user.id)
@@ -367,7 +872,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "check_join":
         is_joined = await check_force_join(user_id, context)
         if is_joined:
-            await query.answer("✅ ধন্যবাদ! সফলভাবে ভেরিফাই করা হয়েছে।", show_alert=False)
+            await query.answer("âœ… à¦§à¦¨à§à¦¯à¦¬à¦¾à¦¦! à¦¸à¦«à¦²à¦­à¦¾à¦¬à§‡ à¦­à§‡à¦°à¦¿à¦«à¦¾à¦‡ à¦•à¦°à¦¾ à¦¹à§Ÿà§‡à¦›à§‡à¥¤", show_alert=False)
             try:
                 await query.message.delete()
             except Exception:
@@ -377,10 +882,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             custom_welcome = await get_setting("start_menu_text", None)
             if not custom_welcome:
                 welcome_text = (
-                    f"🌐 **NUMBER PANEL**\n\n"
-                    f"👋 Welcome, **{user.first_name}**\n"
-                    f"🚀 Premium Number Management System\n\n"
-                    f"⚡ Fast • Simple • Secure"
+                    f"ðŸŒ **NUMBER PANEL**\n\n"
+                    f"ðŸ‘‹ Welcome, **{user.first_name}**\n"
+                    f"ðŸš€ Premium Number Management System\n\n"
+                    f"âš¡ Fast â€¢ Simple â€¢ Secure"
                 )
             else:
                 welcome_text = custom_welcome.format(first_name=user.first_name, username=user.username or "N/A", user_id=user.id)
@@ -388,21 +893,21 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup = await build_main_menu(user_id)
             await context.bot.send_message(chat_id=user_id, text=welcome_text, parse_mode="Markdown", reply_markup=reply_markup)
         else:
-            await query.answer("❌ আপনি এখনো সবকটি চ্যানেল বা গ্রুপে জয়েন করেননি! দয়া করে আগে জয়েন করুন.", show_alert=True)
+            await query.answer("âŒ à¦†à¦ªà¦¨à¦¿ à¦à¦–à¦¨à§‹ à¦¸à¦¬à¦•à¦Ÿà¦¿ à¦šà§à¦¯à¦¾à¦¨à§‡à¦² à¦¬à¦¾ à¦—à§à¦°à§à¦ªà§‡ à¦œà§Ÿà§‡à¦¨ à¦•à¦°à§‡à¦¨à¦¨à¦¿! à¦¦à§Ÿà¦¾ à¦•à¦°à§‡ à¦†à¦—à§‡ à¦œà§Ÿà§‡à¦¨ à¦•à¦°à§à¦¨.", show_alert=True)
 
     # --- System Control Hub Menu ---
     elif query.data == "adm_system_menu" and await is_admin(user_id):
         await query.answer()
-        sys_text = "⚙️ **System Control Hub**\n\nনিচের অপশনগুলো থেকে ম্যানেজ করুন:"
+        sys_text = "âš™ï¸ **System Control Hub**\n\nà¦¨à¦¿à¦šà§‡à¦° à¦…à¦ªà¦¶à¦¨à¦—à§à¦²à§‹ à¦¥à§‡à¦•à§‡ à¦®à§à¦¯à¦¾à¦¨à§‡à¦œ à¦•à¦°à§à¦¨:"
         sys_keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("StexSMS", callback_data="stex_control"), InlineKeyboardButton("Voltx", callback_data="voltx_control")],
             [InlineKeyboardButton("Zenex", callback_data="zenex_control"), InlineKeyboardButton("YE SMS", callback_data="ye_control")],
-            [InlineKeyboardButton("RanaX", callback_data="ranax_control"), InlineKeyboardButton("Emoji", callback_data="premium_emoji")],
+            [InlineKeyboardButton("ðŸ›¡ï¸ Provider OTP", callback_data="provider_otp_info"), InlineKeyboardButton("Emoji", callback_data="premium_emoji")],
             [InlineKeyboardButton("Menu Design", callback_data="menu_design"), InlineKeyboardButton("Test", callback_data="test")],
-            [InlineKeyboardButton("👑 Admin Mgmt", callback_data="adm_mgmt_menu"), InlineKeyboardButton("⚙️ Force Join", callback_data="adm_fj_menu")],
-            [InlineKeyboardButton("👥 User Mgmt", callback_data="adm_usermgmt_menu"), InlineKeyboardButton("💬 OTP Groups", callback_data="adm_otpgroup_menu")],
-            [InlineKeyboardButton("🚀 X-Rony Panel", callback_data="adm_xrony_menu")],
-            [InlineKeyboardButton("🔙 Back", callback_data="adm_back")]
+            [InlineKeyboardButton("ðŸ‘‘ Admin Mgmt", callback_data="adm_mgmt_menu"), InlineKeyboardButton("âš™ï¸ Force Join", callback_data="adm_fj_menu")],
+            [InlineKeyboardButton("ðŸ‘¥ User Mgmt", callback_data="adm_usermgmt_menu"), InlineKeyboardButton("ðŸ’¬ OTP Groups", callback_data="adm_otpgroup_menu")],
+            [InlineKeyboardButton("ðŸš€ X-Rony Panel", callback_data="adm_xrony_menu")],
+            [InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_back")]
         ])
         await query.message.edit_text(sys_text, parse_mode="Markdown", reply_markup=sys_keyboard)
 
@@ -411,12 +916,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         TEST_STATE[user_id] = {"step": "GET_SERVICE"}
         await query.message.edit_text(
-            "🧪 **OTP Group Test**\n\n"
-            "প্রথমে যে **Service** টেস্ট করতে চান তার নাম লিখুন。\n"
-            "উদাহরণ: `Facebook` / `WhatsApp`",
+            "ðŸ§ª **OTP Group Test**\n\n"
+            "à¦ªà§à¦°à¦¥à¦®à§‡ à¦¯à§‡ **Service** à¦Ÿà§‡à¦¸à§à¦Ÿ à¦•à¦°à¦¤à§‡ à¦šà¦¾à¦¨ à¦¤à¦¾à¦° à¦¨à¦¾à¦® à¦²à¦¿à¦–à§à¦¨ã€‚\n"
+            "à¦‰à¦¦à¦¾à¦¹à¦°à¦£: `Facebook` / `WhatsApp`",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
+                [InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_system_menu")]
             ])
         )
 
@@ -424,16 +929,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "menu_design" and await is_admin(user_id):
         await query.answer()
         menu_text = (
-            f"🎨 **Menu & Button Customization Hub**\n\n"
-            f"বটের স্টার্ট মেসেজ এবং রিপ্লাই বাটনগুলোর নাম এখান থেকে আপনার পছন্দমতো পরিবর্তন করতে পারবেন।"
+            f"ðŸŽ¨ **Menu & Button Customization Hub**\n\n"
+            f"à¦¬à¦Ÿà§‡à¦° à¦¸à§à¦Ÿà¦¾à¦°à§à¦Ÿ à¦®à§‡à¦¸à§‡à¦œ à¦à¦¬à¦‚ à¦°à¦¿à¦ªà§à¦²à¦¾à¦‡ à¦¬à¦¾à¦Ÿà¦¨à¦—à§à¦²à§‹à¦° à¦¨à¦¾à¦® à¦à¦–à¦¾à¦¨ à¦¥à§‡à¦•à§‡ à¦†à¦ªà¦¨à¦¾à¦° à¦ªà¦›à¦¨à§à¦¦à¦®à¦¤à§‹ à¦ªà¦°à¦¿à¦¬à¦°à§à¦¤à¦¨ à¦•à¦°à¦¤à§‡ à¦ªà¦¾à¦°à¦¬à§‡à¦¨à¥¤"
         )
         menu_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✏️ Edit Start Menu", callback_data="m_edit_start"), InlineKeyboardButton("✏️ Edit GET NUMBER", callback_data="m_edit_get")],
-            [InlineKeyboardButton("✏️ Edit Search Number", callback_data="m_edit_search"), InlineKeyboardButton("✏️ Edit Select Country", callback_data="m_edit_country")],
-            [InlineKeyboardButton("✏️ Edit TRAFFIC", callback_data="m_edit_traffic"), InlineKeyboardButton("✏️ Edit Refer", callback_data="m_edit_refer")],
-            [InlineKeyboardButton("✏️ Edit WITHDRAWAL", callback_data="m_edit_withdraw"), InlineKeyboardButton("✏️ Edit SUPPORT", callback_data="m_edit_support")],
-            [InlineKeyboardButton("🔄 Reset Defaults", callback_data="m_reset_defaults")],
-            [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
+            [InlineKeyboardButton("âœï¸ Edit Start Menu", callback_data="m_edit_start"), InlineKeyboardButton("âœï¸ Edit GET NUMBER", callback_data="m_edit_get")],
+            [InlineKeyboardButton("âœï¸ Edit Search Number", callback_data="m_edit_search"), InlineKeyboardButton("âœï¸ Edit Select Country", callback_data="m_edit_country")],
+            [InlineKeyboardButton("âœï¸ Edit TRAFFIC", callback_data="m_edit_traffic"), InlineKeyboardButton("âœï¸ Edit Refer", callback_data="m_edit_refer")],
+            [InlineKeyboardButton("âœï¸ Edit WITHDRAWAL", callback_data="m_edit_withdraw"), InlineKeyboardButton("âœï¸ Edit SUPPORT", callback_data="m_edit_support")],
+            [InlineKeyboardButton("ðŸ”„ Reset Defaults", callback_data="m_reset_defaults")],
+            [InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_system_menu")]
         ])
         await query.message.edit_text(menu_text, parse_mode="Markdown", reply_markup=menu_keyboard)
 
@@ -443,19 +948,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         MENU_EDIT_STATE[user_id] = {"action": action}
         
         prompts = {
-            "start": "✏️ নতুন স্টার্ট মেনু টেক্সট লিখে পাঠান (Variables ব্যবহার করতে পারেন যেমন: `{first_name}`):",
-            "get": "✏️ 'GET NUMBER' বাটনটির জন্য নতুন নাম লিখে পাঠান:",
-            "search": "✏️ 'SEARCH NUMBER' বাটনটির জন্য নতুন নাম লিখে পাঠান:",
-            "country": "✏️ সিলেক্ট কান্ট্রি সংক্রান্ত মেসেজ বা লেবেল পরিবর্তনের জন্য নতুন টেক্সট পাঠান:",
-            "traffic": "✏️ 'TRAFFIC' বাটনটির জন্য নতুন নাম লিখে পাঠান:",
-            "refer": "✏️ 'REFERRAL' বাটনটির জন্য নতুন নাম লিখে পাঠান:",
-            "withdraw": "✏️ উইথড্রয়াল সেকশনের হেডার বা বাটন নাম পরিবর্তন করতে নতুন টেক্সট পাঠান:",
-            "support": "✏️ 'SUPPORT' বাটনটির জন্য নতুন নাম লিখে পাঠান:"
+            "start": "âœï¸ à¦¨à¦¤à§à¦¨ à¦¸à§à¦Ÿà¦¾à¦°à§à¦Ÿ à¦®à§‡à¦¨à§ à¦Ÿà§‡à¦•à§à¦¸à¦Ÿ à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨ (Variables à¦¬à§à¦¯à¦¬à¦¹à¦¾à¦° à¦•à¦°à¦¤à§‡ à¦ªà¦¾à¦°à§‡à¦¨ à¦¯à§‡à¦®à¦¨: `{first_name}`):",
+            "get": "âœï¸ 'GET NUMBER' à¦¬à¦¾à¦Ÿà¦¨à¦Ÿà¦¿à¦° à¦œà¦¨à§à¦¯ à¦¨à¦¤à§à¦¨ à¦¨à¦¾à¦® à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨:",
+            "search": "âœï¸ 'SEARCH NUMBER' à¦¬à¦¾à¦Ÿà¦¨à¦Ÿà¦¿à¦° à¦œà¦¨à§à¦¯ à¦¨à¦¤à§à¦¨ à¦¨à¦¾à¦® à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨:",
+            "country": "âœï¸ à¦¸à¦¿à¦²à§‡à¦•à§à¦Ÿ à¦•à¦¾à¦¨à§à¦Ÿà§à¦°à¦¿ à¦¸à¦‚à¦•à§à¦°à¦¾à¦¨à§à¦¤ à¦®à§‡à¦¸à§‡à¦œ à¦¬à¦¾ à¦²à§‡à¦¬à§‡à¦² à¦ªà¦°à¦¿à¦¬à¦°à§à¦¤à¦¨à§‡à¦° à¦œà¦¨à§à¦¯ à¦¨à¦¤à§à¦¨ à¦Ÿà§‡à¦•à§à¦¸à¦Ÿ à¦ªà¦¾à¦ à¦¾à¦¨:",
+            "traffic": "âœï¸ 'TRAFFIC' à¦¬à¦¾à¦Ÿà¦¨à¦Ÿà¦¿à¦° à¦œà¦¨à§à¦¯ à¦¨à¦¤à§à¦¨ à¦¨à¦¾à¦® à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨:",
+            "refer": "âœï¸ 'REFERRAL' à¦¬à¦¾à¦Ÿà¦¨à¦Ÿà¦¿à¦° à¦œà¦¨à§à¦¯ à¦¨à¦¤à§à¦¨ à¦¨à¦¾à¦® à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨:",
+            "withdraw": "âœï¸ à¦‰à¦‡à¦¥à¦¡à§à¦°à§Ÿà¦¾à¦² à¦¸à§‡à¦•à¦¶à¦¨à§‡à¦° à¦¹à§‡à¦¡à¦¾à¦° à¦¬à¦¾ à¦¬à¦¾à¦Ÿà¦¨ à¦¨à¦¾à¦® à¦ªà¦°à¦¿à¦¬à¦°à§à¦¤à¦¨ à¦•à¦°à¦¤à§‡ à¦¨à¦¤à§à¦¨ à¦Ÿà§‡à¦•à§à¦¸à¦Ÿ à¦ªà¦¾à¦ à¦¾à¦¨:",
+            "support": "âœï¸ 'SUPPORT' à¦¬à¦¾à¦Ÿà¦¨à¦Ÿà¦¿à¦° à¦œà¦¨à§à¦¯ à¦¨à¦¤à§à¦¨ à¦¨à¦¾à¦® à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨:"
         }
         await query.message.edit_text(
-            prompts.get(action, "✏️ নতুন নাম বা টেক্সট লিখে পাঠান:"),
+            prompts.get(action, "âœï¸ à¦¨à¦¤à§à¦¨ à¦¨à¦¾à¦® à¦¬à¦¾ à¦Ÿà§‡à¦•à§à¦¸à¦Ÿ à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨:"),
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="menu_design")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data="menu_design")]])
         )
 
     elif query.data == "m_reset_defaults" and await is_admin(user_id):
@@ -463,16 +968,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "start_menu_text", "btn_get_number", "btn_search_number", 
             "btn_traffic", "btn_refer", "btn_balance", "btn_support"
         ]}})
-        await query.answer("✅ সকল মেনু এবং বাটন ডিফল্ট সেটিংয়ে ফিরিয়ে আনা হয়েছে!", show_alert=True)
+        await query.answer("âœ… à¦¸à¦•à¦² à¦®à§‡à¦¨à§ à¦à¦¬à¦‚ à¦¬à¦¾à¦Ÿà¦¨ à¦¡à¦¿à¦«à¦²à§à¦Ÿ à¦¸à§‡à¦Ÿà¦¿à¦‚à§Ÿà§‡ à¦«à¦¿à¦°à¦¿à§Ÿà§‡ à¦†à¦¨à¦¾ à¦¹à§Ÿà§‡à¦›à§‡!", show_alert=True)
         
-        menu_text = f"🎨 **Menu & Button Customization Hub**\n\nবটের স্টার্ট মেসেজ এবং রিপ্লাই বাটনগুলোর নাম এখান থেকে আপনার পছন্দমতো পরিবর্তন করতে পারবেন।"
+        menu_text = f"ðŸŽ¨ **Menu & Button Customization Hub**\n\nà¦¬à¦Ÿà§‡à¦° à¦¸à§à¦Ÿà¦¾à¦°à§à¦Ÿ à¦®à§‡à¦¸à§‡à¦œ à¦à¦¬à¦‚ à¦°à¦¿à¦ªà§à¦²à¦¾à¦‡ à¦¬à¦¾à¦Ÿà¦¨à¦—à§à¦²à§‹à¦° à¦¨à¦¾à¦® à¦à¦–à¦¾à¦¨ à¦¥à§‡à¦•à§‡ à¦†à¦ªà¦¨à¦¾à¦° à¦ªà¦›à¦¨à§à¦¦à¦®à¦¤à§‹ à¦ªà¦°à¦¿à¦¬à¦°à§à¦¤à¦¨ à¦•à¦°à¦¤à§‡ à¦ªà¦¾à¦°à¦¬à§‡à¦¨à¥¤"
         menu_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✏️ Edit Start Menu", callback_data="m_edit_start"), InlineKeyboardButton("✏️ Edit GET NUMBER", callback_data="m_edit_get")],
-            [InlineKeyboardButton("✏️ Edit Search Number", callback_data="m_edit_search"), InlineKeyboardButton("✏️ Edit Select Country", callback_data="m_edit_country")],
-            [InlineKeyboardButton("✏️ Edit TRAFFIC", callback_data="m_edit_traffic"), InlineKeyboardButton("✏️ Edit Refer", callback_data="m_edit_refer")],
-            [InlineKeyboardButton("✏️ Edit WITHDRAWAL", callback_data="m_edit_withdraw"), InlineKeyboardButton("✏️ Edit SUPPORT", callback_data="m_edit_support")],
-            [InlineKeyboardButton("🔄 Reset Defaults", callback_data="m_reset_defaults")],
-            [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
+            [InlineKeyboardButton("âœï¸ Edit Start Menu", callback_data="m_edit_start"), InlineKeyboardButton("âœï¸ Edit GET NUMBER", callback_data="m_edit_get")],
+            [InlineKeyboardButton("âœï¸ Edit Search Number", callback_data="m_edit_search"), InlineKeyboardButton("âœï¸ Edit Select Country", callback_data="m_edit_country")],
+            [InlineKeyboardButton("âœï¸ Edit TRAFFIC", callback_data="m_edit_traffic"), InlineKeyboardButton("âœï¸ Edit Refer", callback_data="m_edit_refer")],
+            [InlineKeyboardButton("âœï¸ Edit WITHDRAWAL", callback_data="m_edit_withdraw"), InlineKeyboardButton("âœï¸ Edit SUPPORT", callback_data="m_edit_support")],
+            [InlineKeyboardButton("ðŸ”„ Reset Defaults", callback_data="m_reset_defaults")],
+            [InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_system_menu")]
         ])
         await query.message.edit_text(menu_text, parse_mode="Markdown", reply_markup=menu_keyboard)
 
@@ -483,9 +988,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sources = await ranax_groups_col.find({}).to_list(length=50)
 
         text = (
-            f"🛡️ **RanaX Auto-OTP Forwarder Panel**\n\n"
-            f"⚡ System Status: `{ranax_status}`\n"
-            f"📌 সোর্স চ্যাট আইডি বা গ্রুপ লিস্ট নিচে দেওয়া হলো:"
+            f"ðŸ›¡ï¸ **RanaX Auto-OTP Forwarder Panel**\n\n"
+            f"âš¡ System Status: `{ranax_status}`\n"
+            f"ðŸ“Œ à¦¸à§‹à¦°à§à¦¸ à¦šà§à¦¯à¦¾à¦Ÿ à¦†à¦‡à¦¡à¦¿ à¦¬à¦¾ à¦—à§à¦°à§à¦ª à¦²à¦¿à¦¸à§à¦Ÿ à¦¨à¦¿à¦šà§‡ à¦¦à§‡à¦“à§Ÿà¦¾ à¦¹à¦²à§‹:"
         )
 
         keyboard = []
@@ -494,18 +999,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 g_id = s.get("chat_id")
                 g_name = s.get("name", "Source Group")
                 keyboard.append([
-                    InlineKeyboardButton(f"📁 {g_name} (`{g_id}`)", callback_data=f"noop_rx_{g_id}"),
-                    InlineKeyboardButton("❌ ডিলিট", callback_data=f"rx_del:{g_id}")
+                    InlineKeyboardButton(f"ðŸ“ {g_name} (`{g_id}`)", callback_data=f"noop_rx_{g_id}"),
+                    InlineKeyboardButton("âŒ à¦¡à¦¿à¦²à¦¿à¦Ÿ", callback_data=f"rx_del:{g_id}")
                 ])
         else:
-            text += "\n\n⚠️ কোনো সোর্স চ্যাট আইডি যুক্ত করা হয়নি।"
+            text += "\n\nâš ï¸ à¦•à§‹à¦¨à§‹ à¦¸à§‹à¦°à§à¦¸ à¦šà§à¦¯à¦¾à¦Ÿ à¦†à¦‡à¦¡à¦¿ à¦¯à§à¦•à§à¦¤ à¦•à¦°à¦¾ à¦¹à§Ÿà¦¨à¦¿à¥¤"
 
-        status_btn_text = "🔴 Turn OFF" if ranax_status == "ON" else "🟢 Turn ON"
+        status_btn_text = "ðŸ”´ Turn OFF" if ranax_status == "ON" else "ðŸŸ¢ Turn ON"
         status_toggle_val = "OFF" if ranax_status == "ON" else "ON"
 
         keyboard.append([InlineKeyboardButton(status_btn_text, callback_data=f"rx_toggle:{status_toggle_val}")])
-        keyboard.append([InlineKeyboardButton("➕ Add Source Chat ID", callback_data="rx_add_start")])
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
+        keyboard.append([InlineKeyboardButton("âž• Add Source Chat ID", callback_data="rx_add_start")])
+        keyboard.append([InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_system_menu")])
 
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -516,74 +1021,74 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         ranax_status = val
         sources = await ranax_groups_col.find({}).to_list(length=50)
-        text = f"🛡️ **RanaX Auto-OTP Forwarder Panel**\n\n⚡ System Status: `{ranax_status}`\n📌 সোর্স চ্যাট আইডি বা গ্রুপ লিস্ট নিচে দেওয়া হলো:"
+        text = f"ðŸ›¡ï¸ **RanaX Auto-OTP Forwarder Panel**\n\nâš¡ System Status: `{ranax_status}`\nðŸ“Œ à¦¸à§‹à¦°à§à¦¸ à¦šà§à¦¯à¦¾à¦Ÿ à¦†à¦‡à¦¡à¦¿ à¦¬à¦¾ à¦—à§à¦°à§à¦ª à¦²à¦¿à¦¸à§à¦Ÿ à¦¨à¦¿à¦šà§‡ à¦¦à§‡à¦“à§Ÿà¦¾ à¦¹à¦²à§‹:"
         keyboard = []
         for s in sources:
             g_id = s.get("chat_id")
             g_name = s.get("name", "Source Group")
             keyboard.append([
-                InlineKeyboardButton(f"📁 {g_name} (`{g_id}`)", callback_data=f"noop_rx_{g_id}"),
-                InlineKeyboardButton("❌ ডিলিট", callback_data=f"rx_del:{g_id}")
+                InlineKeyboardButton(f"ðŸ“ {g_name} (`{g_id}`)", callback_data=f"noop_rx_{g_id}"),
+                InlineKeyboardButton("âŒ à¦¡à¦¿à¦²à¦¿à¦Ÿ", callback_data=f"rx_del:{g_id}")
             ])
-        status_btn_text = "🔴 Turn OFF" if ranax_status == "ON" else "🟢 Turn ON"
+        status_btn_text = "ðŸ”´ Turn OFF" if ranax_status == "ON" else "ðŸŸ¢ Turn ON"
         status_toggle_val = "OFF" if ranax_status == "ON" else "ON"
         keyboard.append([InlineKeyboardButton(status_btn_text, callback_data=f"rx_toggle:{status_toggle_val}")])
-        keyboard.append([InlineKeyboardButton("➕ Add Source Chat ID", callback_data="rx_add_start")])
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
+        keyboard.append([InlineKeyboardButton("âž• Add Source Chat ID", callback_data="rx_add_start")])
+        keyboard.append([InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_system_menu")])
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data == "rx_add_start" and await is_admin(user_id):
         await query.answer()
         RANAX_ADD_STATE[user_id] = {"step": "GET_NAME"}
         await query.message.edit_text(
-            "➕ **Add RanaX Source Chat**\n\nদয়া করে গ্রুপ বা চ্যানেলের নাম (Name) লিখে পাঠান:",
+            "âž• **Add RanaX Source Chat**\n\nà¦¦à§Ÿà¦¾ à¦•à¦°à§‡ à¦—à§à¦°à§à¦ª à¦¬à¦¾ à¦šà§à¦¯à¦¾à¦¨à§‡à¦²à§‡à¦° à¦¨à¦¾à¦® (Name) à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨:",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="ranax_control")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data="ranax_control")]])
         )
 
     elif query.data.startswith("rx_del:") and await is_admin(user_id):
         del_id = query.data.split(":", 1)[1]
         await ranax_groups_col.delete_one({"chat_id": del_id})
-        await query.answer("✅ Source Chat ID successfully removed!", show_alert=True)
+        await query.answer("âœ… Source Chat ID successfully removed!", show_alert=True)
         
         ranax_status = await get_setting("ranax_status", "ON")
         sources = await ranax_groups_col.find({}).to_list(length=50)
-        text = f"🛡️ **RanaX Auto-OTP Forwarder Panel**\n\n⚡ System Status: `{ranax_status}`\n📌 সোর্স চ্যাট আইডি বা গ্রুপ লিস্ট নিচে দেওয়া হলো:"
+        text = f"ðŸ›¡ï¸ **RanaX Auto-OTP Forwarder Panel**\n\nâš¡ System Status: `{ranax_status}`\nðŸ“Œ à¦¸à§‹à¦°à§à¦¸ à¦šà§à¦¯à¦¾à¦Ÿ à¦†à¦‡à¦¡à¦¿ à¦¬à¦¾ à¦—à§à¦°à§à¦ª à¦²à¦¿à¦¸à§à¦Ÿ à¦¨à¦¿à¦šà§‡ à¦¦à§‡à¦“à§Ÿà¦¾ à¦¹à¦²à§‹:"
         keyboard = []
         for s in sources:
             g_id = s.get("chat_id")
             g_name = s.get("name", "Source Group")
             keyboard.append([
-                InlineKeyboardButton(f"📁 {g_name} (`{g_id}`)", callback_data=f"noop_rx_{g_id}"),
-                InlineKeyboardButton("❌ ডিলিট", callback_data=f"rx_del:{g_id}")
+                InlineKeyboardButton(f"ðŸ“ {g_name} (`{g_id}`)", callback_data=f"noop_rx_{g_id}"),
+                InlineKeyboardButton("âŒ à¦¡à¦¿à¦²à¦¿à¦Ÿ", callback_data=f"rx_del:{g_id}")
             ])
-        status_btn_text = "🔴 Turn OFF" if ranax_status == "ON" else "🟢 Turn ON"
+        status_btn_text = "ðŸ”´ Turn OFF" if ranax_status == "ON" else "ðŸŸ¢ Turn ON"
         status_toggle_val = "OFF" if ranax_status == "ON" else "ON"
         keyboard.append([InlineKeyboardButton(status_btn_text, callback_data=f"rx_toggle:{status_toggle_val}")])
-        keyboard.append([InlineKeyboardButton("➕ Add Source Chat ID", callback_data="rx_add_start")])
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
+        keyboard.append([InlineKeyboardButton("âž• Add Source Chat ID", callback_data="rx_add_start")])
+        keyboard.append([InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_system_menu")])
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     # --- 1. Admin Management System ---
     elif query.data == "adm_mgmt_menu" and await is_admin(user_id):
         await query.answer()
         admins = await admins_col.find({}).to_list(length=100)
-        text = f"👑 **Admin Management System**\n\nPrimary Owner ID: `{OWNER_ID}`\n\n**Current Admins:**"
+        text = f"ðŸ‘‘ **Admin Management System**\n\nPrimary Owner ID: `{OWNER_ID}`\n\n**Current Admins:**"
         
         keyboard = []
         if not admins:
-            keyboard.append([InlineKeyboardButton("⚠️ কোনো সাব-এডমিন নেই", callback_data="noop")])
+            keyboard.append([InlineKeyboardButton("âš ï¸ à¦•à§‹à¦¨à§‹ à¦¸à¦¾à¦¬-à¦à¦¡à¦®à¦¿à¦¨ à¦¨à§‡à¦‡", callback_data="noop")])
         else:
             for adm in admins:
                 adm_id = adm['user_id']
                 adm_name = adm.get('username', 'Admin')
                 keyboard.append([
-                    InlineKeyboardButton(f"👤 {adm_name} (`{adm_id}`)", callback_data=f"noop_{adm_id}"),
-                    InlineKeyboardButton("❌ রিমুভ", callback_data=f"adm_do_rem:{adm_id}")
+                    InlineKeyboardButton(f"ðŸ‘¤ {adm_name} (`{adm_id}`)", callback_data=f"noop_{adm_id}"),
+                    InlineKeyboardButton("âŒ à¦°à¦¿à¦®à§à¦­", callback_data=f"adm_do_rem:{adm_id}")
                 ])
 
-        keyboard.append([InlineKeyboardButton("➕ Add Admin", callback_data="adm_add_start")])
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
+        keyboard.append([InlineKeyboardButton("âž• Add Admin", callback_data="adm_add_start")])
+        keyboard.append([InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_system_menu")])
         
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -591,28 +1096,28 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         ADMIN_ADD_STATE[user_id] = True
         await query.message.edit_text(
-            "➕ **Add New Admin**\n\nদয়া করে নতুন এডমিনের **Telegram Chat ID** বা ইউজারনেম লিখে পাঠান:",
+            "âž• **Add New Admin**\n\nà¦¦à§Ÿà¦¾ à¦•à¦°à§‡ à¦¨à¦¤à§à¦¨ à¦à¦¡à¦®à¦¿à¦¨à§‡à¦° **Telegram Chat ID** à¦¬à¦¾ à¦‡à¦‰à¦œà¦¾à¦°à¦¨à§‡à¦® à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨:",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_mgmt_menu")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_mgmt_menu")]])
         )
 
     elif query.data.startswith("adm_do_rem:") and user_id == OWNER_ID:
         rem_id = int(query.data.split(":", 1)[1])
         await admins_col.delete_one({"user_id": rem_id})
-        await query.answer(f"✅ Admin {rem_id} successfully removed!", show_alert=True)
+        await query.answer(f"âœ… Admin {rem_id} successfully removed!", show_alert=True)
         
         admins = await admins_col.find({}).to_list(length=100)
-        text = f"👑 **Admin Management System**\n\nPrimary Owner ID: `{OWNER_ID}`\n\n**Current Admins:**"
+        text = f"ðŸ‘‘ **Admin Management System**\n\nPrimary Owner ID: `{OWNER_ID}`\n\n**Current Admins:**"
         keyboard = []
         for adm in admins:
             adm_id = adm['user_id']
             adm_name = adm.get('username', 'Admin')
             keyboard.append([
-                InlineKeyboardButton(f"👤 {adm_name} (`{adm_id}`)", callback_data=f"noop_{adm_id}"),
-                InlineKeyboardButton("❌ রিমুভ", callback_data=f"adm_do_rem:{adm_id}")
+                InlineKeyboardButton(f"ðŸ‘¤ {adm_name} (`{adm_id}`)", callback_data=f"noop_{adm_id}"),
+                InlineKeyboardButton("âŒ à¦°à¦¿à¦®à§à¦­", callback_data=f"adm_do_rem:{adm_id}")
             ])
-        keyboard.append([InlineKeyboardButton("➕ Add Admin", callback_data="adm_add_start")])
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
+        keyboard.append([InlineKeyboardButton("âž• Add Admin", callback_data="adm_add_start")])
+        keyboard.append([InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_system_menu")])
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     # --- 2. Force Join System ---
@@ -621,7 +1126,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         fj_status = await get_setting("force_join_status", "ON")
         channels = await channels_col.find({}).to_list(length=50)
         
-        text = f"📢 **Force Join System Control**\n\nSTATUS: `{fj_status}`\n\n**Managed Channels:**"
+        text = f"ðŸ“¢ **Force Join System Control**\n\nSTATUS: `{fj_status}`\n\n**Managed Channels:**"
         
         keyboard = []
         if channels:
@@ -629,18 +1134,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 c_name = c.get('name', 'Channel')
                 c_id = c.get('chat_id')
                 keyboard.append([
-                    InlineKeyboardButton(f"📢 {c_name} (`{c_id}`)", callback_data=f"noop_chan_{c_id}"),
-                    InlineKeyboardButton("🗑️ রিমুভ", callback_data=f"fj_do_del:{c_id}")
+                    InlineKeyboardButton(f"ðŸ“¢ {c_name} (`{c_id}`)", callback_data=f"noop_chan_{c_id}"),
+                    InlineKeyboardButton("ðŸ—‘ï¸ à¦°à¦¿à¦®à§à¦­", callback_data=f"fj_do_del:{c_id}")
                 ])
         else:
-            text += "\n⚠️ কোনো কাস্টম চ্যানেল যুক্ত করা হয়নি।"
+            text += "\nâš ï¸ à¦•à§‹à¦¨à§‹ à¦•à¦¾à¦¸à§à¦Ÿà¦® à¦šà§à¦¯à¦¾à¦¨à§‡à¦² à¦¯à§à¦•à§à¦¤ à¦•à¦°à¦¾ à¦¹à§Ÿà¦¨à¦¿à¥¤"
 
-        status_toggle_btn = "🔴 Turn OFF" if fj_status == "ON" else "🟢 Turn ON"
+        status_toggle_btn = "ðŸ”´ Turn OFF" if fj_status == "ON" else "ðŸŸ¢ Turn ON"
         toggle_val = "OFF" if fj_status == "ON" else "ON"
 
         keyboard.append([InlineKeyboardButton(status_toggle_btn, callback_data=f"set_fj:{toggle_val}")])
-        keyboard.append([InlineKeyboardButton("➕ Add Channel", callback_data="fj_add_ch")])
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
+        keyboard.append([InlineKeyboardButton("âž• Add Channel", callback_data="fj_add_ch")])
+        keyboard.append([InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_system_menu")])
         
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -651,48 +1156,48 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         fj_status = val
         channels = await channels_col.find({}).to_list(length=50)
-        text = f"📢 **Force Join System Control**\n\nSTATUS: `{fj_status}`\n\n**Managed Channels:**"
+        text = f"ðŸ“¢ **Force Join System Control**\n\nSTATUS: `{fj_status}`\n\n**Managed Channels:**"
         keyboard = []
         for c in channels:
             keyboard.append([
-                InlineKeyboardButton(f"📢 {c.get('name')} (`{c.get('chat_id')}`)", callback_data=f"noop"),
-                InlineKeyboardButton("🗑️ রিমুভ", callback_data=f"fj_do_del:{c.get('chat_id')}")
+                InlineKeyboardButton(f"ðŸ“¢ {c.get('name')} (`{c.get('chat_id')}`)", callback_data=f"noop"),
+                InlineKeyboardButton("ðŸ—‘ï¸ à¦°à¦¿à¦®à§à¦­", callback_data=f"fj_do_del:{c.get('chat_id')}")
             ])
-        status_toggle_btn = "🔴 Turn OFF" if fj_status == "ON" else "🟢 Turn ON"
+        status_toggle_btn = "ðŸ”´ Turn OFF" if fj_status == "ON" else "ðŸŸ¢ Turn ON"
         toggle_val = "OFF" if fj_status == "ON" else "ON"
         keyboard.append([InlineKeyboardButton(status_toggle_btn, callback_data=f"set_fj:{toggle_val}")])
-        keyboard.append([InlineKeyboardButton("➕ Add Channel", callback_data="fj_add_ch")])
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
+        keyboard.append([InlineKeyboardButton("âž• Add Channel", callback_data="fj_add_ch")])
+        keyboard.append([InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_system_menu")])
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data == "fj_add_ch" and await is_admin(user_id):
         await query.answer()
         CHANNEL_ADD_STATE[user_id] = {"step": "GET_NAME"}
         await query.message.edit_text(
-            "📢 **Add Force Join Channel**\n\nদয়া করে চ্যানেলের নাম (Name) লিখে পাঠান:",
+            "ðŸ“¢ **Add Force Join Channel**\n\nà¦¦à§Ÿà¦¾ à¦•à¦°à§‡ à¦šà§à¦¯à¦¾à¦¨à§‡à¦²à§‡à¦° à¦¨à¦¾à¦® (Name) à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨:",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_fj_menu")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_fj_menu")]])
         )
 
     elif query.data.startswith("fj_do_del:") and await is_admin(user_id):
         chat_id_to_del = query.data.split(":", 1)[1]
         await channels_col.delete_one({"chat_id": chat_id_to_del})
-        await query.answer("✅ Channel successfully deleted!", show_alert=True)
+        await query.answer("âœ… Channel successfully deleted!", show_alert=True)
         
         fj_status = await get_setting("force_join_status", "ON")
         channels = await channels_col.find({}).to_list(length=50)
-        text = f"📢 **Force Join System Control**\n\nSTATUS: `{fj_status}`\n\n**Managed Channels:**"
+        text = f"ðŸ“¢ **Force Join System Control**\n\nSTATUS: `{fj_status}`\n\n**Managed Channels:**"
         keyboard = []
         for c in channels:
             keyboard.append([
-                InlineKeyboardButton(f"📢 {c.get('name')} (`{c.get('chat_id')}`)", callback_data="noop"),
-                InlineKeyboardButton("🗑️ রিমুভ", callback_data=f"fj_do_del:{c.get('chat_id')}")
+                InlineKeyboardButton(f"ðŸ“¢ {c.get('name')} (`{c.get('chat_id')}`)", callback_data="noop"),
+                InlineKeyboardButton("ðŸ—‘ï¸ à¦°à¦¿à¦®à§à¦­", callback_data=f"fj_do_del:{c.get('chat_id')}")
             ])
-        status_toggle_btn = "🔴 Turn OFF" if fj_status == "ON" else "🟢 Turn ON"
+        status_toggle_btn = "ðŸ”´ Turn OFF" if fj_status == "ON" else "ðŸŸ¢ Turn ON"
         toggle_val = "OFF" if fj_status == "ON" else "ON"
         keyboard.append([InlineKeyboardButton(status_toggle_btn, callback_data=f"set_fj:{toggle_val}")])
-        keyboard.append([InlineKeyboardButton("➕ Add Channel", callback_data="fj_add_ch")])
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
+        keyboard.append([InlineKeyboardButton("âž• Add Channel", callback_data="fj_add_ch")])
+        keyboard.append([InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_system_menu")])
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     # --- 3. User Management & Analytics ---
@@ -703,39 +1208,39 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         banned_u = await users_col.count_documents({"banned": True})
 
         text = (
-            f"👥 **User Management & Analytics**\n\n"
-            f"📊 **Live Statistics:**\n"
-            f"👥 Total Users: `{total_u}`\n"
-            f"🟢 Verified Users: `{verified_u}`\n"
-            f"🔴 Banned Users: `{banned_u}`\n\n"
-            f"নিচের অপশনগুলো থেকে ম্যানেজ করুন:"
+            f"ðŸ‘¥ **User Management & Analytics**\n\n"
+            f"ðŸ“Š **Live Statistics:**\n"
+            f"ðŸ‘¥ Total Users: `{total_u}`\n"
+            f"ðŸŸ¢ Verified Users: `{verified_u}`\n"
+            f"ðŸ”´ Banned Users: `{banned_u}`\n\n"
+            f"à¦¨à¦¿à¦šà§‡à¦° à¦…à¦ªà¦¶à¦¨à¦—à§à¦²à§‹ à¦¥à§‡à¦•à§‡ à¦®à§à¦¯à¦¾à¦¨à§‡à¦œ à¦•à¦°à§à¦¨:"
         )
         keyboard = [
-            [InlineKeyboardButton("💰 Balance", callback_data="us_m_balance"), InlineKeyboardButton("🚫 Ban/Unban", callback_data="us_m_ban")],
-            [InlineKeyboardButton("👤 Profile", callback_data="us_m_profile"), InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
+            [InlineKeyboardButton("ðŸ’° Balance", callback_data="us_m_balance"), InlineKeyboardButton("ðŸš« Ban/Unban", callback_data="us_m_ban")],
+            [InlineKeyboardButton("ðŸ‘¤ Profile", callback_data="us_m_profile"), InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_system_menu")]
         ]
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data == "us_m_balance" and await is_admin(user_id):
         await query.answer()
         USER_MANAGE_STATE[user_id] = {"action": "balance"}
-        await query.message.edit_text("💰 ব্যালেন্স ম্যানেজ করতে ইউজারের **Chat ID** বা **Username** লিখে পাঠান:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_usermgmt_menu")]]))
+        await query.message.edit_text("ðŸ’° à¦¬à§à¦¯à¦¾à¦²à§‡à¦¨à§à¦¸ à¦®à§à¦¯à¦¾à¦¨à§‡à¦œ à¦•à¦°à¦¤à§‡ à¦‡à¦‰à¦œà¦¾à¦°à§‡à¦° **Chat ID** à¦¬à¦¾ **Username** à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_usermgmt_menu")]]))
 
     elif query.data == "us_m_ban" and await is_admin(user_id):
         await query.answer()
         USER_MANAGE_STATE[user_id] = {"action": "ban"}
-        await query.message.edit_text("🚫 ব্যান বা আনব্যান করতে ইউজারের **Chat ID** বা **Username** লিখে পাঠান:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_usermgmt_menu")]]))
+        await query.message.edit_text("ðŸš« à¦¬à§à¦¯à¦¾à¦¨ à¦¬à¦¾ à¦†à¦¨à¦¬à§à¦¯à¦¾à¦¨ à¦•à¦°à¦¤à§‡ à¦‡à¦‰à¦œà¦¾à¦°à§‡à¦° **Chat ID** à¦¬à¦¾ **Username** à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_usermgmt_menu")]]))
 
     elif query.data == "us_m_profile" and await is_admin(user_id):
         await query.answer()
         USER_MANAGE_STATE[user_id] = {"action": "profile"}
-        await query.message.edit_text("👤 ইউজারের ফুল ডিটেইলস দেখতে তার **Chat ID** বা **Username** লিখে পাঠান:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_usermgmt_menu")]]))
+        await query.message.edit_text("ðŸ‘¤ à¦‡à¦‰à¦œà¦¾à¦°à§‡à¦° à¦«à§à¦² à¦¡à¦¿à¦Ÿà§‡à¦‡à¦²à¦¸ à¦¦à§‡à¦–à¦¤à§‡ à¦¤à¦¾à¦° **Chat ID** à¦¬à¦¾ **Username** à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_usermgmt_menu")]]))
 
     # --- 4. OTP Group Management ---
     elif query.data == "adm_otpgroup_menu" and await is_admin(user_id):
         await query.answer()
         groups = await forward_groups_col.find({}).to_list(length=50)
-        text = f"💬 **OTP Group Management**\n\n**Configured Forward Groups:**"
+        text = f"ðŸ’¬ **OTP Group Management**\n\n**Configured Forward Groups:**"
         
         keyboard = []
         if groups:
@@ -743,44 +1248,44 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 g_id = g.get('group_id')
                 g_name = g.get('name', 'OTP Group')
                 keyboard.append([
-                    InlineKeyboardButton(f"🛡️ {g_name} (`{g_id}`)", callback_data=f"noop_group_{g_id}"),
-                    InlineKeyboardButton("❌ রিমুভ", callback_data=f"ot_do_del:{g_id}")
+                    InlineKeyboardButton(f"ðŸ›¡ï¸ {g_name} (`{g_id}`)", callback_data=f"noop_group_{g_id}"),
+                    InlineKeyboardButton("âŒ à¦°à¦¿à¦®à§à¦­", callback_data=f"ot_do_del:{g_id}")
                 ])
         else:
-            text += "\n⚠️ কোনো ফরওয়ার্ড গ্রুপ সেট করা হয়নি।"
+            text += "\nâš ï¸ à¦•à§‹à¦¨à§‹ à¦«à¦°à¦“à§Ÿà¦¾à¦°à§à¦¡ à¦—à§à¦°à§à¦ª à¦¸à§‡à¦Ÿ à¦•à¦°à¦¾ à¦¹à§Ÿà¦¨à¦¿à¥¤"
 
-        keyboard.append([InlineKeyboardButton("✏️ Edit OTP Button Link", callback_data="ot_edit_link")])
-        keyboard.append([InlineKeyboardButton("➕ Add Forward Group", callback_data="ot_add_group")])
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
+        keyboard.append([InlineKeyboardButton("âœï¸ Edit OTP Button Link", callback_data="ot_edit_link")])
+        keyboard.append([InlineKeyboardButton("âž• Add Forward Group", callback_data="ot_add_group")])
+        keyboard.append([InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_system_menu")])
         
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data == "ot_edit_link" and await is_admin(user_id):
         await query.answer()
         ADMIN_SETTINGS_STATE[user_id] = {"setting": "edit_otp_link"}
-        await query.message.edit_text("✏️ নতুন বট লিংক বা চ্যানেল লিংক লিখে পাঠান যা ওটিপি গ্রুপের বাটনে সেট হবে:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_otpgroup_menu")]]))
+        await query.message.edit_text("âœï¸ à¦¨à¦¤à§à¦¨ à¦¬à¦Ÿ à¦²à¦¿à¦‚à¦• à¦¬à¦¾ à¦šà§à¦¯à¦¾à¦¨à§‡à¦² à¦²à¦¿à¦‚à¦• à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨ à¦¯à¦¾ à¦“à¦Ÿà¦¿à¦ªà¦¿ à¦—à§à¦°à§à¦ªà§‡à¦° à¦¬à¦¾à¦Ÿà¦¨à§‡ à¦¸à§‡à¦Ÿ à¦¹à¦¬à§‡:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_otpgroup_menu")]]))
 
     elif query.data == "ot_add_group" and await is_admin(user_id):
         await query.answer()
         FORWARD_GROUP_ADD_STATE[user_id] = {"step": "GET_ID"}
-        await query.message.edit_text("➕ নতুন ফরওয়ার্ড গ্রুপের **Chat ID** লিখে পাঠান:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_otpgroup_menu")]]))
+        await query.message.edit_text("âž• à¦¨à¦¤à§à¦¨ à¦«à¦°à¦“à§Ÿà¦¾à¦°à§à¦¡ à¦—à§à¦°à§à¦ªà§‡à¦° **Chat ID** à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_otpgroup_menu")]]))
 
     elif query.data.startswith("ot_do_del:") and await is_admin(user_id):
         gid = query.data.split(":", 1)[1]
         await forward_groups_col.delete_one({"group_id": gid})
-        await query.answer("✅ Group successfully deleted!", show_alert=True)
+        await query.answer("âœ… Group successfully deleted!", show_alert=True)
         
         groups = await forward_groups_col.find({}).to_list(length=50)
-        text = f"💬 **OTP Group Management**\n\n**Configured Forward Groups:**"
+        text = f"ðŸ’¬ **OTP Group Management**\n\n**Configured Forward Groups:**"
         keyboard = []
         for g in groups:
             keyboard.append([
-                InlineKeyboardButton(f"🛡️ {g.get('name', 'Group')} (`{g.get('group_id')}`)", callback_data="noop"),
-                InlineKeyboardButton("❌ রিমুভ", callback_data=f"ot_do_del:{g.get('group_id')}")
+                InlineKeyboardButton(f"ðŸ›¡ï¸ {g.get('name', 'Group')} (`{g.get('group_id')}`)", callback_data="noop"),
+                InlineKeyboardButton("âŒ à¦°à¦¿à¦®à§à¦­", callback_data=f"ot_do_del:{g.get('group_id')}")
             ])
-        keyboard.append([InlineKeyboardButton("✏️ Edit OTP Button Link", callback_data="ot_edit_link")])
-        keyboard.append([InlineKeyboardButton("➕ Add Forward Group", callback_data="ot_add_group")])
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")])
+        keyboard.append([InlineKeyboardButton("âœï¸ Edit OTP Button Link", callback_data="ot_edit_link")])
+        keyboard.append([InlineKeyboardButton("âž• Add Forward Group", callback_data="ot_add_group")])
+        keyboard.append([InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_system_menu")])
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     # --- 5. X-Rony Control Panel ---
@@ -794,21 +1299,21 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cooldown = await get_setting("cooldown_timer", 5)
 
         text = (
-            f"🚀 **X-Rony Advanced Control Panel**\n\n"
-            f"💸 Withdrawal Status: `{wd_status}`\n"
-            f"💵 Min Withdraw: `{min_wd}৳`\n"
-            f"👥 Referral Bonus: `{ref_bonus}৳`\n"
-            f"⚡ OTP Reward Rate: `{otp_rate}৳`\n"
-            f"📦 Numbers per Request: `{num_req}`\n"
-            f"⏱️ Cooldown Timer: `{cooldown}s`\n\n"
-            f"নিচের অপশনগুলো থেকে মান পরিবর্তন করুন:"
+            f"ðŸš€ **X-Rony Advanced Control Panel**\n\n"
+            f"ðŸ’¸ Withdrawal Status: `{wd_status}`\n"
+            f"ðŸ’µ Min Withdraw: `{min_wd}à§³`\n"
+            f"ðŸ‘¥ Referral Bonus: `{ref_bonus}à§³`\n"
+            f"âš¡ OTP Reward Rate: `{otp_rate}à§³`\n"
+            f"ðŸ“¦ Numbers per Request: `{num_req}`\n"
+            f"â±ï¸ Cooldown Timer: `{cooldown}s`\n\n"
+            f"à¦¨à¦¿à¦šà§‡à¦° à¦…à¦ªà¦¶à¦¨à¦—à§à¦²à§‹ à¦¥à§‡à¦•à§‡ à¦®à¦¾à¦¨ à¦ªà¦°à¦¿à¦¬à¦°à§à¦¤à¦¨ à¦•à¦°à§à¦¨:"
         )
         keyboard = [
-            [InlineKeyboardButton("💸 Toggle Withdraw", callback_data="xr_toggle_wd")],
-            [InlineKeyboardButton("💵 Min Withdraw", callback_data="xr_set_minwd"), InlineKeyboardButton("👥 Refer Bonus", callback_data="xr_set_ref")],
-            [InlineKeyboardButton("⚡ OTP Rate", callback_data="xr_set_otprate"), InlineKeyboardButton("📦 Num/Req", callback_data="xr_set_numreq")],
-            [InlineKeyboardButton("⏱️ Cooldown", callback_data="xr_set_cooldown"), InlineKeyboardButton("💳 Pay Methods", callback_data="xr_pay_methods")],
-            [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
+            [InlineKeyboardButton("ðŸ’¸ Toggle Withdraw", callback_data="xr_toggle_wd")],
+            [InlineKeyboardButton("ðŸ’µ Min Withdraw", callback_data="xr_set_minwd"), InlineKeyboardButton("ðŸ‘¥ Refer Bonus", callback_data="xr_set_ref")],
+            [InlineKeyboardButton("âš¡ OTP Rate", callback_data="xr_set_otprate"), InlineKeyboardButton("ðŸ“¦ Num/Req", callback_data="xr_set_numreq")],
+            [InlineKeyboardButton("â±ï¸ Cooldown", callback_data="xr_set_cooldown"), InlineKeyboardButton("ðŸ’³ Pay Methods", callback_data="xr_pay_methods")],
+            [InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_system_menu")]
         ]
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -825,89 +1330,89 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         num_req = await get_setting("num_request_count", 2)
         cooldown = await get_setting("cooldown_timer", 5)
         text = (
-            f"🚀 **X-Rony Advanced Control Panel**\n\n"
-            f"💸 Withdrawal Status: `{wd_status}`\n"
-            f"💵 Min Withdraw: `{min_wd}৳`\n"
-            f"👥 Referral Bonus: `{ref_bonus}৳`\n"
-            f"⚡ OTP Reward Rate: `{otp_rate}৳`\n"
-            f"📦 Numbers per Request: `{num_req}`\n"
-            f"⏱️ Cooldown Timer: `{cooldown}s`\n"
+            f"ðŸš€ **X-Rony Advanced Control Panel**\n\n"
+            f"ðŸ’¸ Withdrawal Status: `{wd_status}`\n"
+            f"ðŸ’µ Min Withdraw: `{min_wd}à§³`\n"
+            f"ðŸ‘¥ Referral Bonus: `{ref_bonus}à§³`\n"
+            f"âš¡ OTP Reward Rate: `{otp_rate}à§³`\n"
+            f"ðŸ“¦ Numbers per Request: `{num_req}`\n"
+            f"â±ï¸ Cooldown Timer: `{cooldown}s`\n"
         )
         keyboard = [
-            [InlineKeyboardButton("💸 Toggle Withdraw", callback_data="xr_toggle_wd")],
-            [InlineKeyboardButton("💵 Min Withdraw", callback_data="xr_set_minwd"), InlineKeyboardButton("👥 Refer Bonus", callback_data="xr_set_ref")],
-            [InlineKeyboardButton("⚡ OTP Rate", callback_data="xr_set_otprate"), InlineKeyboardButton("📦 Num/Req", callback_data="xr_set_numreq")],
-            [InlineKeyboardButton("⏱️ Cooldown", callback_data="xr_set_cooldown"), InlineKeyboardButton("💳 Pay Methods", callback_data="xr_pay_methods")],
-            [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]
+            [InlineKeyboardButton("ðŸ’¸ Toggle Withdraw", callback_data="xr_toggle_wd")],
+            [InlineKeyboardButton("ðŸ’µ Min Withdraw", callback_data="xr_set_minwd"), InlineKeyboardButton("ðŸ‘¥ Refer Bonus", callback_data="xr_set_ref")],
+            [InlineKeyboardButton("âš¡ OTP Rate", callback_data="xr_set_otprate"), InlineKeyboardButton("ðŸ“¦ Num/Req", callback_data="xr_set_numreq")],
+            [InlineKeyboardButton("â±ï¸ Cooldown", callback_data="xr_set_cooldown"), InlineKeyboardButton("ðŸ’³ Pay Methods", callback_data="xr_pay_methods")],
+            [InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_system_menu")]
         ]
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data == "xr_set_minwd" and await is_admin(user_id):
         await query.answer()
         ADMIN_SETTINGS_STATE[user_id] = {"setting": "set_min_withdraw"}
-        await query.message.edit_text("💵 নতুন মিনিমাম উইথড্র অ্যামাউন্ট লিখে পাঠান (যেমন: `150`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_xrony_menu")]]))
+        await query.message.edit_text("ðŸ’µ à¦¨à¦¤à§à¦¨ à¦®à¦¿à¦¨à¦¿à¦®à¦¾à¦® à¦‰à¦‡à¦¥à¦¡à§à¦° à¦…à§à¦¯à¦¾à¦®à¦¾à¦‰à¦¨à§à¦Ÿ à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨ (à¦¯à§‡à¦®à¦¨: `150`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_xrony_menu")]]))
 
     elif query.data == "xr_set_ref" and await is_admin(user_id):
         await query.answer()
         ADMIN_SETTINGS_STATE[user_id] = {"setting": "set_ref_bonus"}
-        await query.message.edit_text("👥 নতুন রেফার বোনাস অ্যামাউন্ট লিখে পাঠান (যেমন: `0.05`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_xrony_menu")]]))
+        await query.message.edit_text("ðŸ‘¥ à¦¨à¦¤à§à¦¨ à¦°à§‡à¦«à¦¾à¦° à¦¬à§‹à¦¨à¦¾à¦¸ à¦…à§à¦¯à¦¾à¦®à¦¾à¦‰à¦¨à§à¦Ÿ à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨ (à¦¯à§‡à¦®à¦¨: `0.05`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_xrony_menu")]]))
 
     elif query.data == "xr_set_otprate" and await is_admin(user_id):
         await query.answer()
         ADMIN_SETTINGS_STATE[user_id] = {"setting": "set_otp_rate"}
-        await query.message.edit_text("⚡ প্রতি ওটিপি রেট লিখে পাঠান (যেমন: `0.80`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_xrony_menu")]]))
+        await query.message.edit_text("âš¡ à¦ªà§à¦°à¦¤à¦¿ à¦“à¦Ÿà¦¿à¦ªà¦¿ à¦°à§‡à¦Ÿ à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨ (à¦¯à§‡à¦®à¦¨: `0.80`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_xrony_menu")]]))
 
     elif query.data == "xr_set_numreq" and await is_admin(user_id):
         await query.answer()
         ADMIN_SETTINGS_STATE[user_id] = {"setting": "set_num_req"}
-        await query.message.edit_text("📦 এক সাথে ইউজারকে কয়টি করে নাম্বার দেওয়া হবে তা লিখুন (যেমন: `5`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_xrony_menu")]]))
+        await query.message.edit_text("ðŸ“¦ à¦à¦• à¦¸à¦¾à¦¥à§‡ à¦‡à¦‰à¦œà¦¾à¦°à¦•à§‡ à¦•à§Ÿà¦Ÿà¦¿ à¦•à¦°à§‡ à¦¨à¦¾à¦®à§à¦¬à¦¾à¦° à¦¦à§‡à¦“à§Ÿà¦¾ à¦¹à¦¬à§‡ à¦¤à¦¾ à¦²à¦¿à¦–à§à¦¨ (à¦¯à§‡à¦®à¦¨: `5`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_xrony_menu")]]))
 
     elif query.data == "xr_set_cooldown" and await is_admin(user_id):
         await query.answer()
         ADMIN_SETTINGS_STATE[user_id] = {"setting": "set_cooldown"}
-        await query.message.edit_text("⏱️ কোডাউন সেকেন্ড সেট করুন (যেমন: `10`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_xrony_menu")]]))
+        await query.message.edit_text("â±ï¸ à¦•à§‹à¦¡à¦¾à¦‰à¦¨ à¦¸à§‡à¦•à§‡à¦¨à§à¦¡ à¦¸à§‡à¦Ÿ à¦•à¦°à§à¦¨ (à¦¯à§‡à¦®à¦¨: `10`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_xrony_menu")]]))
 
     elif query.data == "xr_pay_methods" and await is_admin(user_id):
         await query.answer()
         methods = await get_setting("payment_methods", ["Bkash", "Nagad", "Binance"])
-        text = f"💳 **Payment Methods Control**\n\nCurrent Methods: `{', '.join(methods)}`\n\nনতুন মেথড যোগ করতে বা রিমুভ করতে নিচের অপশন ব্যবহার করুন:"
+        text = f"ðŸ’³ **Payment Methods Control**\n\nCurrent Methods: `{', '.join(methods)}`\n\nà¦¨à¦¤à§à¦¨ à¦®à§‡à¦¥à¦¡ à¦¯à§‹à¦— à¦•à¦°à¦¤à§‡ à¦¬à¦¾ à¦°à¦¿à¦®à§à¦­ à¦•à¦°à¦¤à§‡ à¦¨à¦¿à¦šà§‡à¦° à¦…à¦ªà¦¶à¦¨ à¦¬à§à¦¯à¦¬à¦¹à¦¾à¦° à¦•à¦°à§à¦¨:"
         keyboard = [
-            [InlineKeyboardButton("➕ Add Method", callback_data="xr_add_pay"), InlineKeyboardButton("🗑️ Remove Method", callback_data="xr_rem_pay")],
-            [InlineKeyboardButton("🔙 Back", callback_data="adm_xrony_menu")]
+            [InlineKeyboardButton("âž• Add Method", callback_data="xr_add_pay"), InlineKeyboardButton("ðŸ—‘ï¸ Remove Method", callback_data="xr_rem_pay")],
+            [InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_xrony_menu")]
         ]
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data == "xr_add_pay" and await is_admin(user_id):
         await query.answer()
         ADMIN_SETTINGS_STATE[user_id] = {"setting": "add_pay_method"}
-        await query.message.edit_text("➕ নতুন পেমেন্ট মেথডের নাম লিখে পাঠান (যেমন: `Rocket`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="xr_pay_methods")]]))
+        await query.message.edit_text("âž• à¦¨à¦¤à§à¦¨ à¦ªà§‡à¦®à§‡à¦¨à§à¦Ÿ à¦®à§‡à¦¥à¦¡à§‡à¦° à¦¨à¦¾à¦® à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨ (à¦¯à§‡à¦®à¦¨: `Rocket`):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data="xr_pay_methods")]]))
 
     elif query.data == "xr_rem_pay" and await is_admin(user_id):
         await query.answer()
         ADMIN_SETTINGS_STATE[user_id] = {"setting": "rem_pay_method"}
-        await query.message.edit_text("🗑️ যে পেমেন্ট মেথডটি ডিলিট করতে চান তার নাম লিখে পাঠান:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="xr_pay_methods")]]))
+        await query.message.edit_text("ðŸ—‘ï¸ à¦¯à§‡ à¦ªà§‡à¦®à§‡à¦¨à§à¦Ÿ à¦®à§‡à¦¥à¦¡à¦Ÿà¦¿ à¦¡à¦¿à¦²à¦¿à¦Ÿ à¦•à¦°à¦¤à§‡ à¦šà¦¾à¦¨ à¦¤à¦¾à¦° à¦¨à¦¾à¦® à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data="xr_pay_methods")]]))
 
     elif query.data == "adm_leaderboard" and await is_admin(user_id):
         await query.answer()
         cursor = users_col.find({}).sort("total_earned", -1).limit(10)
         top_users = await cursor.to_list(length=10)
-        text = "🏆 **OTP Hunter Leaderboard** 🏆\n\n"
-        rank_emojis = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+        text = "ðŸ† **OTP Hunter Leaderboard** ðŸ†\n\n"
+        rank_emojis = ["ðŸ¥‡", "ðŸ¥ˆ", "ðŸ¥‰", "4ï¸âƒ£", "5ï¸âƒ£", "6ï¸âƒ£", "7ï¸âƒ£", "8ï¸âƒ£", "9ï¸âƒ£", "ðŸ”Ÿ"]
         if not top_users:
-            text += "⚠️ বর্তমানে কোনো লিডারবোর্ড ডাটা নেই。"
+            text += "âš ï¸ à¦¬à¦°à§à¦¤à¦®à¦¾à¦¨à§‡ à¦•à§‹à¦¨à§‹ à¦²à¦¿à¦¡à¦¾à¦°à¦¬à§‹à¦°à§à¦¡ à¦¡à¦¾à¦Ÿà¦¾ à¦¨à§‡à¦‡ã€‚"
         else:
             for index, u in enumerate(top_users):
-                emoji = rank_emojis[index] if index < 10 else "👤"
+                emoji = rank_emojis[index] if index < 10 else "ðŸ‘¤"
                 uname = f"@{u['username']}" if u.get('username') else f"User `{u['user_id']}`"
                 earned = u.get('total_earned', 0.0)
-                text += f"{emoji} {uname} — `💰 {earned:.2f}৳`\n"
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_back")]])
+                text += f"{emoji} {uname} â€” `ðŸ’° {earned:.2f}à§³`\n"
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_back")]])
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
     elif query.data == "adm_upload" and await is_admin(user_id):
         await query.answer()
         ADMIN_UPLOAD_STATE[user_id] = {"step": "GET_SERVICE"}
-        await query.message.edit_text("⚙️ কোন সার্ভিসের নাম্বার আপলোড করবেন সেই নাম লিখে পাঠান (যেমন: Facebook):", parse_mode="Markdown")
+        await query.message.edit_text("âš™ï¸ à¦•à§‹à¦¨ à¦¸à¦¾à¦°à§à¦­à¦¿à¦¸à§‡à¦° à¦¨à¦¾à¦®à§à¦¬à¦¾à¦° à¦†à¦ªà¦²à§‹à¦¡ à¦•à¦°à¦¬à§‡à¦¨ à¦¸à§‡à¦‡ à¦¨à¦¾à¦® à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨ (à¦¯à§‡à¦®à¦¨: Facebook):", parse_mode="Markdown")
 
     elif query.data == "adm_delete" and await is_admin(user_id):
         await query.answer()
@@ -915,16 +1420,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cursor = numbers_col.aggregate(pipeline)
         batches = await cursor.to_list(length=100)
         if not batches:
-            text = "🗑️ **Delete Files**\n\nবর্তমানে সিস্টেমে কোনো ফাইল বা ব্যাচ এভেইলেবল নেই।"
-            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_back")]])
+            text = "ðŸ—‘ï¸ **Delete Files**\n\nà¦¬à¦°à§à¦¤à¦®à¦¾à¦¨à§‡ à¦¸à¦¿à¦¸à§à¦Ÿà§‡à¦®à§‡ à¦•à§‹à¦¨à§‹ à¦«à¦¾à¦‡à¦² à¦¬à¦¾ à¦¬à§à¦¯à¦¾à¦š à¦à¦­à§‡à¦‡à¦²à§‡à¦¬à¦² à¦¨à§‡à¦‡à¥¤"
+            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_back")]])
         else:
-            text = "🗑️ **Delete Files / Batches**\n\nনিচের তালিকা থেকে যে ফাইলটি মুছে ফেলতে চান সেটিতে ক্লিক করুন:"
+            text = "ðŸ—‘ï¸ **Delete Files / Batches**\n\nà¦¨à¦¿à¦šà§‡à¦° à¦¤à¦¾à¦²à¦¿à¦•à¦¾ à¦¥à§‡à¦•à§‡ à¦¯à§‡ à¦«à¦¾à¦‡à¦²à¦Ÿà¦¿ à¦®à§à¦›à§‡ à¦«à§‡à¦²à¦¤à§‡ à¦šà¦¾à¦¨ à¦¸à§‡à¦Ÿà¦¿à¦¤à§‡ à¦•à§à¦²à¦¿à¦• à¦•à¦°à§à¦¨:"
             keyboard_buttons = []
             for b in batches:
                 serv = b["_id"]["service"]
                 count = b["count"]
-                keyboard_buttons.append([InlineKeyboardButton(f"❌ {serv} ({count} Nos)", callback_data=f"adm_delfile:{serv}")])
-            keyboard_buttons.append([InlineKeyboardButton("🔙 Back", callback_data="adm_back")])
+                keyboard_buttons.append([InlineKeyboardButton(f"âŒ {serv} ({count} Nos)", callback_data=f"adm_delfile:{serv}")])
+            keyboard_buttons.append([InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_back")])
             keyboard = InlineKeyboardMarkup(keyboard_buttons)
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
@@ -932,22 +1437,22 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         service_to_del = query.data.split(":", 1)[1]
         await numbers_col.delete_many({"service_name": service_to_del})
         await traffic_col.delete_many({"service": service_to_del})
-        await query.answer(f"✅ সফলভাবে {service_to_del} এর সব নাম্বার ডিলিট করা হয়েছে!", show_alert=True)
+        await query.answer(f"âœ… à¦¸à¦«à¦²à¦­à¦¾à¦¬à§‡ {service_to_del} à¦à¦° à¦¸à¦¬ à¦¨à¦¾à¦®à§à¦¬à¦¾à¦° à¦¡à¦¿à¦²à¦¿à¦Ÿ à¦•à¦°à¦¾ à¦¹à§Ÿà§‡à¦›à§‡!", show_alert=True)
         
         pipeline = [{"$group": {"_id": {"service": "$service_name", "country": "$country"}, "count": {"$sum": 1}}}]
         cursor = numbers_col.aggregate(pipeline)
         batches = await cursor.to_list(length=100)
         if not batches:
-            text = "🗑️ **Delete Files**\n\nবর্তমানে সিস্টেমে কোনো ফাইল বা ব্যাচ এভেইলেবল নেই।"
-            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_back")]])
+            text = "ðŸ—‘ï¸ **Delete Files**\n\nà¦¬à¦°à§à¦¤à¦®à¦¾à¦¨à§‡ à¦¸à¦¿à¦¸à§à¦Ÿà§‡à¦®à§‡ à¦•à§‹à¦¨à§‹ à¦«à¦¾à¦‡à¦² à¦¬à¦¾ à¦¬à§à¦¯à¦¾à¦š à¦à¦­à§‡à¦‡à¦²à§‡à¦¬à¦² à¦¨à§‡à¦‡à¥¤"
+            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_back")]])
         else:
-            text = "🗑️ **Delete Files / Batches**\n\nনিচের তালিকা থেকে যে ফাইলটি মুছে ফেলতে চান সেটিতে ক্লিক করুন:"
+            text = "ðŸ—‘ï¸ **Delete Files / Batches**\n\nà¦¨à¦¿à¦šà§‡à¦° à¦¤à¦¾à¦²à¦¿à¦•à¦¾ à¦¥à§‡à¦•à§‡ à¦¯à§‡ à¦«à¦¾à¦‡à¦²à¦Ÿà¦¿ à¦®à§à¦›à§‡ à¦«à§‡à¦²à¦¤à§‡ à¦šà¦¾à¦¨ à¦¸à§‡à¦Ÿà¦¿à¦¤à§‡ à¦•à§à¦²à¦¿à¦• à¦•à¦°à§à¦¨:"
             keyboard_buttons = []
             for b in batches:
                 serv = b["_id"]["service"]
                 count = b["count"]
-                keyboard_buttons.append([InlineKeyboardButton(f"❌ {serv} ({count} Nos)", callback_data=f"adm_delfile:{serv}")])
-            keyboard_buttons.append([InlineKeyboardButton("🔙 Back", callback_data="adm_back")])
+                keyboard_buttons.append([InlineKeyboardButton(f"âŒ {serv} ({count} Nos)", callback_data=f"adm_delfile:{serv}")])
+            keyboard_buttons.append([InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_back")])
             keyboard = InlineKeyboardMarkup(keyboard_buttons)
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
@@ -955,13 +1460,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         ADMIN_BROADCAST_STATE[user_id] = True
         await query.message.edit_text(
-            "📢 **Broadcast System**\n\nদয়া করে যে মেসেজটি সকল ইউজারের কাছে পাঠাতে চান সেটি লিখে পাঠান:",
+            "ðŸ“¢ **Broadcast System**\n\nà¦¦à§Ÿà¦¾ à¦•à¦°à§‡ à¦¯à§‡ à¦®à§‡à¦¸à§‡à¦œà¦Ÿà¦¿ à¦¸à¦•à¦² à¦‡à¦‰à¦œà¦¾à¦°à§‡à¦° à¦•à¦¾à¦›à§‡ à¦ªà¦¾à¦ à¦¾à¦¤à§‡ à¦šà¦¾à¦¨ à¦¸à§‡à¦Ÿà¦¿ à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨:",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_back")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_back")]])
         )
 
     elif query.data == "adm_close" and await is_admin(user_id):
-        await query.answer("প্যানেল বন্ধ করা হয়েছে।")
+        await query.answer("à¦ªà§à¦¯à¦¾à¦¨à§‡à¦² à¦¬à¦¨à§à¦§ à¦•à¦°à¦¾ à¦¹à§Ÿà§‡à¦›à§‡à¥¤")
         try:
             await query.message.delete()
         except Exception:
@@ -975,15 +1480,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=markup)
 
     elif query.data == "refresh_traffic":
-        await query.answer("🔄 ট্রাফিক রিফ্রেশ করা হয়েছে!")
+        await query.answer("ðŸ”„ à¦Ÿà§à¦°à¦¾à¦«à¦¿à¦• à¦°à¦¿à¦«à§à¦°à§‡à¦¶ à¦•à¦°à¦¾ à¦¹à§Ÿà§‡à¦›à§‡!")
         traffic_list = await traffic_col.find({}).to_list(length=100)
         if not traffic_list:
-            text = "📊 বর্তমানে কোনো ট্রাফিক আপডেট নেই。"
+            text = "ðŸ“Š à¦¬à¦°à§à¦¤à¦®à¦¾à¦¨à§‡ à¦•à§‹à¦¨à§‹ à¦Ÿà§à¦°à¦¾à¦«à¦¿à¦• à¦†à¦ªà¦¡à§‡à¦Ÿ à¦¨à§‡à¦‡ã€‚"
         else:
-            text = "🚦 **1 HOUR LIVE TRAFFIC**\n\n"
+            text = "ðŸš¦ **1 HOUR LIVE TRAFFIC**\n\n"
             for item in traffic_list:
-                text += f"🌍 **{item['service']}**\n{item['country']} : {item['status']} {item['icon']}\n\n"
-        keyboard = [[InlineKeyboardButton("🔄 Refresh", callback_data="refresh_traffic")]]
+                text += f"ðŸŒ **{item['service']}**\n{item['country']} : {item['status']} {item['icon']}\n\n"
+        keyboard = [[InlineKeyboardButton("ðŸ”„ Refresh", callback_data="refresh_traffic")]]
         try:
             await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
         except Exception:
@@ -993,7 +1498,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         wd_status = await get_setting("withdraw_global_status", "ON")
         if wd_status != "ON":
-            await query.message.reply_text("❌ বর্তমানে উইথড্র সিস্টেম গ্লোবালি বন্ধ রাখা হয়েছে।", parse_mode="Markdown")
+            await query.message.reply_text("âŒ à¦¬à¦°à§à¦¤à¦®à¦¾à¦¨à§‡ à¦‰à¦‡à¦¥à¦¡à§à¦° à¦¸à¦¿à¦¸à§à¦Ÿà§‡à¦® à¦—à§à¦²à§‹à¦¬à¦¾à¦²à¦¿ à¦¬à¦¨à§à¦§ à¦°à¦¾à¦–à¦¾ à¦¹à§Ÿà§‡à¦›à§‡à¥¤", parse_mode="Markdown")
             return
 
         user_data = await users_col.find_one({"user_id": user_id})
@@ -1002,8 +1507,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if balance < min_wd:
             await query.message.reply_text(
-                f"❌ দুঃখিত! উইথড্র করার জন্য আপনার অন্তত `{min_wd}৳` ব্যালেন্স থাকতে হবে。\n"
-                f"আপনার বর্তমান ব্যালেন্স: `{balance:.2f}৳`",
+                f"âŒ à¦¦à§à¦ƒà¦–à¦¿à¦¤! à¦‰à¦‡à¦¥à¦¡à§à¦° à¦•à¦°à¦¾à¦° à¦œà¦¨à§à¦¯ à¦†à¦ªà¦¨à¦¾à¦° à¦…à¦¨à§à¦¤à¦¤ `{min_wd}à§³` à¦¬à§à¦¯à¦¾à¦²à§‡à¦¨à§à¦¸ à¦¥à¦¾à¦•à¦¤à§‡ à¦¹à¦¬à§‡ã€‚\n"
+                f"à¦†à¦ªà¦¨à¦¾à¦° à¦¬à¦°à§à¦¤à¦®à¦¾à¦¨ à¦¬à§à¦¯à¦¾à¦²à§‡à¦¨à§à¦¸: `{balance:.2f}à§³`",
                 parse_mode="Markdown"
             )
             return
@@ -1012,13 +1517,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         methods = await get_setting("payment_methods", ["Bkash", "Nagad", "Binance"])
         keyboard = []
         for m in methods:
-            keyboard.append([InlineKeyboardButton(f"📱 {m}", callback_data=f"wd_meth:{m}")])
-        keyboard.append([InlineKeyboardButton("🔙 Back to Balance", callback_data="back_to_balance")])
+            keyboard.append([InlineKeyboardButton(f"ðŸ“± {m}", callback_data=f"wd_meth:{m}")])
+        keyboard.append([InlineKeyboardButton("ðŸ”™ Back to Balance", callback_data="back_to_balance")])
         
         await query.message.edit_text(
-            f"💸 **Withdrawal Portal**\n\n"
-            f"আপনার বর্তমান ব্যালেন্স: `{balance:.2f}৳`\n"
-            f"দয়া করে আপনার পেমেন্ট মেথড সিলেক্ট করুন:",
+            f"ðŸ’¸ **Withdrawal Portal**\n\n"
+            f"à¦†à¦ªà¦¨à¦¾à¦° à¦¬à¦°à§à¦¤à¦®à¦¾à¦¨ à¦¬à§à¦¯à¦¾à¦²à§‡à¦¨à§à¦¸: `{balance:.2f}à§³`\n"
+            f"à¦¦à§Ÿà¦¾ à¦•à¦°à§‡ à¦†à¦ªà¦¨à¦¾à¦° à¦ªà§‡à¦®à§‡à¦¨à§à¦Ÿ à¦®à§‡à¦¥à¦¡ à¦¸à¦¿à¦²à§‡à¦•à§à¦Ÿ à¦•à¦°à§à¦¨:",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
@@ -1028,8 +1533,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         method = query.data.split(":", 1)[1]
         USER_WITHDRAW_STATE[user_id] = {"step": "GET_ACCOUNT", "method": method}
         await query.message.edit_text(
-            f"💳 Selected Method: **{method}**\n\n"
-            f"দয়া করে আপনার সঠিক অ্যাকাউন্ট নাম্বার বা অ্যাড্রেস লিখে পাঠান:",
+            f"ðŸ’³ Selected Method: **{method}**\n\n"
+            f"à¦¦à§Ÿà¦¾ à¦•à¦°à§‡ à¦†à¦ªà¦¨à¦¾à¦° à¦¸à¦ à¦¿à¦• à¦…à§à¦¯à¦¾à¦•à¦¾à¦‰à¦¨à§à¦Ÿ à¦¨à¦¾à¦®à§à¦¬à¦¾à¦° à¦¬à¦¾ à¦…à§à¦¯à¦¾à¦¡à§à¦°à§‡à¦¸ à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨:",
             parse_mode="Markdown"
         )
 
@@ -1041,22 +1546,22 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         amount = float(parts[3])
         
         if action == "yes":
-            await query.message.edit_text(f"{query.message.text}\n\n✅ **Status: Confirmed & Completed by Admin**", parse_mode="Markdown")
+            await query.message.edit_text(f"{query.message.text}\n\nâœ… **Status: Confirmed & Completed by Admin**", parse_mode="Markdown")
             try:
                 await context.bot.send_message(
                     chat_id=target_user_id,
-                    text=f"🎉 **অভিনন্দন!** আপনার উইথড্র রিকোয়েস্টটি সফলভাবে সম্পূর্ণ হয়েছে এবং পেমেন্ট পাঠিয়ে দেওয়া হয়েছে। ✅",
+                    text=f"ðŸŽ‰ **à¦…à¦­à¦¿à¦¨à¦¨à§à¦¦à¦¨!** à¦†à¦ªà¦¨à¦¾à¦° à¦‰à¦‡à¦¥à¦¡à§à¦° à¦°à¦¿à¦•à§‹à§Ÿà§‡à¦¸à§à¦Ÿà¦Ÿà¦¿ à¦¸à¦«à¦²à¦­à¦¾à¦¬à§‡ à¦¸à¦®à§à¦ªà§‚à¦°à§à¦£ à¦¹à§Ÿà§‡à¦›à§‡ à¦à¦¬à¦‚ à¦ªà§‡à¦®à§‡à¦¨à§à¦Ÿ à¦ªà¦¾à¦ à¦¿à§Ÿà§‡ à¦¦à§‡à¦“à§Ÿà¦¾ à¦¹à§Ÿà§‡à¦›à§‡à¥¤ âœ…",
                     parse_mode="Markdown"
                 )
             except Exception:
                 pass
         elif action == "no":
             await users_col.update_one({"user_id": target_user_id}, {"$inc": {"balance": amount}})
-            await query.message.edit_text(f"{query.message.text}\n\n❌ **Status: Cancelled & Refunded**", parse_mode="Markdown")
+            await query.message.edit_text(f"{query.message.text}\n\nâŒ **Status: Cancelled & Refunded**", parse_mode="Markdown")
             try:
                 await context.bot.send_message(
                     chat_id=target_user_id,
-                    text=f"❌ আপনার উইথড্র রিকোয়েস্টটি বাতিল করা হয়েছে এবং `{amount}৳` আপনার ব্যালেন্সে ফিরিয়ে দেওয়া হয়েছে।",
+                    text=f"âŒ à¦†à¦ªà¦¨à¦¾à¦° à¦‰à¦‡à¦¥à¦¡à§à¦° à¦°à¦¿à¦•à§‹à§Ÿà§‡à¦¸à§à¦Ÿà¦Ÿà¦¿ à¦¬à¦¾à¦¤à¦¿à¦² à¦•à¦°à¦¾ à¦¹à§Ÿà§‡à¦›à§‡ à¦à¦¬à¦‚ `{amount}à§³` à¦†à¦ªà¦¨à¦¾à¦° à¦¬à§à¦¯à¦¾à¦²à§‡à¦¨à§à¦¸à§‡ à¦«à¦¿à¦°à¦¿à§Ÿà§‡ à¦¦à§‡à¦“à§Ÿà¦¾ à¦¹à§Ÿà§‡à¦›à§‡à¥¤",
                     parse_mode="Markdown"
                 )
             except Exception:
@@ -1068,7 +1573,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if action == "yes":
             data = USER_WITHDRAW_STATE.get(user_id)
             if not data:
-                await query.message.edit_text("⚠️ সেশন মেয়াদোত্তীর্ণ হয়ে গেছে।")
+                await query.message.edit_text("âš ï¸ à¦¸à§‡à¦¶à¦¨ à¦®à§‡à§Ÿà¦¾à¦¦à§‹à¦¤à§à¦¤à§€à¦°à§à¦£ à¦¹à§Ÿà§‡ à¦—à§‡à¦›à§‡à¥¤")
                 return
             
             method = data["method"]
@@ -1080,27 +1585,27 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 del USER_WITHDRAW_STATE[user_id]
                 
             await query.message.edit_text(
-                f"🎉 **উইথড্র রিকোয়েস্ট সফলভাবে জমা হয়েছে!**\n\n"
-                f"💳 Method: `{method}`\n"
-                f"📥 Account: `{account}`\n"
-                f"💰 Amount: `{amount:.2f}৳`\n\n"
-                f"⏳ রিকোয়েস্টটি রিভিউ করে পেমেন্ট সম্পন্ন করা হবে। ধন্যবাদ!",
+                f"ðŸŽ‰ **à¦‰à¦‡à¦¥à¦¡à§à¦° à¦°à¦¿à¦•à§‹à§Ÿà§‡à¦¸à§à¦Ÿ à¦¸à¦«à¦²à¦­à¦¾à¦¬à§‡ à¦œà¦®à¦¾ à¦¹à§Ÿà§‡à¦›à§‡!**\n\n"
+                f"ðŸ’³ Method: `{method}`\n"
+                f"ðŸ“¥ Account: `{account}`\n"
+                f"ðŸ’° Amount: `{amount:.2f}à§³`\n\n"
+                f"â³ à¦°à¦¿à¦•à§‹à§Ÿà§‡à¦¸à§à¦Ÿà¦Ÿà¦¿ à¦°à¦¿à¦­à¦¿à¦‰ à¦•à¦°à§‡ à¦ªà§‡à¦®à§‡à¦¨à§à¦Ÿ à¦¸à¦®à§à¦ªà¦¨à§à¦¨ à¦•à¦°à¦¾ à¦¹à¦¬à§‡à¥¤ à¦§à¦¨à§à¦¯à¦¬à¦¾à¦¦!",
                 parse_mode="Markdown"
             )
             
             username_str = f"@{query.from_user.username}" if query.from_user.username else "No Username"
             admin_msg = (
-                f"🚨 **New Withdrawal Request!**\n\n"
-                f"👤 User ID: `{user_id}`\n"
-                f"🔗 Username: {username_str}\n"
-                f"💳 Method: `{method}`\n"
-                f"📥 Account: `{account}`\n"
-                f"💵 Amount: `{amount:.2f}৳`"
+                f"ðŸš¨ **New Withdrawal Request!**\n\n"
+                f"ðŸ‘¤ User ID: `{user_id}`\n"
+                f"ðŸ”— Username: {username_str}\n"
+                f"ðŸ’³ Method: `{method}`\n"
+                f"ðŸ“¥ Account: `{account}`\n"
+                f"ðŸ’µ Amount: `{amount:.2f}à§³`"
             )
             admin_keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✅ Confirm", callback_data=f"wd_conf:yes:{user_id}:{amount}"),
-                    InlineKeyboardButton("❌ Cancel", callback_data=f"wd_conf:no:{user_id}:{amount}")
+                    InlineKeyboardButton("âœ… Confirm", callback_data=f"wd_conf:yes:{user_id}:{amount}"),
+                    InlineKeyboardButton("âŒ Cancel", callback_data=f"wd_conf:no:{user_id}:{amount}")
                 ]
             ])
             try:
@@ -1115,7 +1620,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             if user_id in USER_WITHDRAW_STATE:
                 del USER_WITHDRAW_STATE[user_id]
-            await query.message.edit_text("❌ উইথড্র রিকোয়েস্ট বাতিল করা হয়েছে।")
+            await query.message.edit_text("âŒ à¦‰à¦‡à¦¥à¦¡à§à¦° à¦°à¦¿à¦•à§‹à§Ÿà§‡à¦¸à§à¦Ÿ à¦¬à¦¾à¦¤à¦¿à¦² à¦•à¦°à¦¾ à¦¹à§Ÿà§‡à¦›à§‡à¥¤")
 
     elif query.data == "back_to_balance":
         await query.answer()
@@ -1127,28 +1632,273 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_otp_rate = await get_setting("otp_rate", 0.60)
         
         balance_text = (
-            f"👤 **User Account Dashboard**\n\n"
-            f"💰 Current Balance : `{balance:.2f}৳`\n"
-            f"📈 Total Earned : `{total_earned:.2f}৳`\n"
-            f"💸 Withdrawal Status : `Active`\n\n"
-            f"⚡ Earn per OTP: `{current_otp_rate}৳`"
+            f"ðŸ‘¤ **User Account Dashboard**\n\n"
+            f"ðŸ’° Current Balance : `{balance:.2f}à§³`\n"
+            f"ðŸ“ˆ Total Earned : `{total_earned:.2f}à§³`\n"
+            f"ðŸ’¸ Withdrawal Status : `Active`\n\n"
+            f"âš¡ Earn per OTP: `{current_otp_rate}à§³`"
         )
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💸 Withdraw Balance", callback_data="withdraw_menu")]
+            [InlineKeyboardButton("ðŸ’¸ Withdraw Balance", callback_data="withdraw_menu")]
         ])
         await query.message.edit_text(balance_text, parse_mode="Markdown", reply_markup=keyboard)
 
+
+    # --- Dynamic Provider Control Panels ---
+    elif query.data == "provider_otp_info" and await is_admin(user_id):
+        await query.answer()
+        await query.message.edit_text(
+            "ðŸ›¡ï¸ **Authorized Provider OTP**\n\n"
+            "OTP delivery is accepted only from the configured provider webhook/API and is matched to an active order.\n\n"
+            "The bot does not read, intercept, or forward OTPs from unrelated Telegram chats or devices.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data="adm_system_menu")]])
+        )
+
+    elif query.data.startswith("p_control:") and await is_admin(user_id):
+        provider = query.data.split(":", 1)[1]
+        if provider not in PROVIDERS:
+            await query.answer("âŒ Unknown provider", show_alert=True)
+        else:
+            await query.answer()
+            text, markup = await provider_panel_markup(provider)
+            await query.message.edit_text(text, parse_mode="Markdown", reply_markup=markup)
+
+    elif query.data.startswith("p_keys:") and await is_admin(user_id):
+        provider = query.data.split(":", 1)[1]
+        keys = await provider_keys_col.find({"provider": provider}).sort("created_at", 1).to_list(length=100)
+        text = f"ðŸ”‘ **{provider_label(provider)} API Keys**\n\nTotal API Keys: `{len(keys)}`\n"
+        keyboard = []
+        for index, key in enumerate(keys, 1):
+            keyboard.append([InlineKeyboardButton(
+                f"ðŸ”‘ Key #{index}: {key.get('masked', 'â€¢â€¢â€¢â€¢')}", callback_data="noop"
+            ), InlineKeyboardButton("ðŸ—‘ Delete", callback_data=f"p_del_key:{provider}:{key['key_id']}")])
+        keyboard.append([InlineKeyboardButton("ðŸ”™ Back", callback_data=f"p_control:{provider}")])
+        await query.answer()
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif query.data.startswith("p_add_key:") and await is_admin(user_id):
+        provider = query.data.split(":", 1)[1]
+        PROVIDER_STATE[user_id] = {"step": "API_KEY", "provider": provider}
+        await query.answer()
+        await query.message.edit_text(
+            f"ðŸ”‘ **Send the new {provider_label(provider)} API Key:**\n\n"
+            "The key will be masked in the admin UI.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("âŒ Cancel", callback_data=f"p_control:{provider}")]])
+        )
+
+    elif query.data.startswith("p_del_key:") and await is_admin(user_id):
+        _, provider, key_id = query.data.split(":", 2)
+        await query.answer()
+        await query.message.edit_text(
+            "âš ï¸ **Are you sure you want to delete this API key?**",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("âœ… Confirm", callback_data=f"p_del_key_confirm:{provider}:{key_id}"), InlineKeyboardButton("âŒ Cancel", callback_data=f"p_keys:{provider}")]
+            ])
+        )
+
+    elif query.data.startswith("p_del_key_confirm:") and await is_admin(user_id):
+        _, provider, key_id = query.data.split(":", 2)
+        await provider_keys_col.delete_one({"provider": provider, "key_id": key_id})
+        await query.answer("âœ… API key deleted", show_alert=True)
+        keys = await provider_keys_col.find({"provider": provider}).sort("created_at", 1).to_list(length=100)
+        text = f"ðŸ”‘ **{provider_label(provider)} API Keys**\n\nTotal API Keys: `{len(keys)}`\n"
+        keyboard = []
+        for index, key in enumerate(keys, 1):
+            keyboard.append([InlineKeyboardButton(f"ðŸ”‘ Key #{index}: {key.get('masked', 'â€¢â€¢â€¢â€¢')}", callback_data="noop"), InlineKeyboardButton("ðŸ—‘ Delete", callback_data=f"p_del_key:{provider}:{key['key_id']}")])
+        keyboard.append([InlineKeyboardButton("ðŸ”™ Back", callback_data=f"p_control:{provider}")])
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif query.data.startswith("p_services:") and await is_admin(user_id):
+        provider = query.data.split(":", 1)[1]
+        await query.answer()
+        text, markup = await provider_services_markup(provider)
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=markup)
+
+    elif query.data.startswith("p_add_service:") and await is_admin(user_id):
+        provider = query.data.split(":", 1)[1]
+        PROVIDER_STATE[user_id] = {"step": "SERVICE_NAME", "provider": provider}
+        await query.answer()
+        await query.message.edit_text(
+            "ðŸ“ **Enter Service Name (e.g. TELEGRAM):**",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("âŒ Cancel", callback_data=f"p_services:{provider}")]])
+        )
+
+    elif query.data.startswith("p_service:") and await is_admin(user_id):
+        _, provider, service_id = query.data.split(":", 2)
+        await query.answer()
+        text, markup = await provider_service_screen(provider, service_id)
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=markup)
+
+    elif query.data.startswith("p_del_service:") and await is_admin(user_id):
+        _, provider, service_id = query.data.split(":", 2)
+        await query.answer()
+        await query.message.edit_text(
+            "âš ï¸ **Delete this service and all of its countries/ranges?**",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("âœ… Confirm", callback_data=f"p_del_service_confirm:{provider}:{service_id}"), InlineKeyboardButton("âŒ Cancel", callback_data=f"p_service:{provider}:{service_id}")]])
+        )
+
+    elif query.data.startswith("p_del_service_confirm:") and await is_admin(user_id):
+        _, provider, service_id = query.data.split(":", 2)
+        await provider_ranges_col.delete_many({"provider": provider, "service_id": service_id})
+        await provider_countries_col.delete_many({"provider": provider, "service_id": service_id})
+        await provider_services_col.delete_one({"provider": provider, "service_id": service_id})
+        await query.answer("âœ… Service deleted", show_alert=True)
+        text, markup = await provider_services_markup(provider)
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=markup)
+
+    elif query.data.startswith("p_add_country:") and await is_admin(user_id):
+        _, provider, service_id = query.data.split(":", 2)
+        PROVIDER_STATE[user_id] = {"step": "COUNTRY_NAME", "provider": provider, "service_id": service_id}
+        await query.answer()
+        await query.message.edit_text(
+            "ðŸŒ **Enter Country Name:**",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("âŒ Cancel", callback_data=f"p_service:{provider}:{service_id}")]])
+        )
+
+    elif query.data.startswith("p_country:") and await is_admin(user_id):
+        _, provider, service_id, country_id = query.data.split(":", 3)
+        await query.answer()
+        text, markup = await provider_country_screen(provider, service_id, country_id)
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=markup)
+
+    elif query.data.startswith("p_del_country:") and await is_admin(user_id):
+        _, provider, service_id, country_id = query.data.split(":", 3)
+        await query.answer()
+        await query.message.edit_text(
+            "âš ï¸ **Delete this country and all configured ranges?**",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("âœ… Confirm", callback_data=f"p_del_country_confirm:{provider}:{service_id}:{country_id}"), InlineKeyboardButton("âŒ Cancel", callback_data=f"p_country:{provider}:{service_id}:{country_id}")]])
+        )
+
+    elif query.data.startswith("p_del_country_confirm:") and await is_admin(user_id):
+        _, provider, service_id, country_id = query.data.split(":", 3)
+        await provider_ranges_col.delete_many({"provider": provider, "service_id": service_id, "country_id": country_id})
+        await provider_countries_col.delete_one({"provider": provider, "country_id": country_id})
+        await query.answer("âœ… Country deleted", show_alert=True)
+        text, markup = await provider_service_screen(provider, service_id)
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=markup)
+
+    elif query.data.startswith("p_add_range:") and await is_admin(user_id):
+        _, provider, service_id, country_id = query.data.split(":", 3)
+        country = await provider_countries_col.find_one({"provider": provider, "country_id": country_id})
+        country_name = country.get("name", "the selected country") if country else "the selected country"
+        PROVIDER_STATE[user_id] = {"step": "RANGE", "provider": provider, "service_id": service_id, "country_id": country_id}
+        await query.answer()
+        await query.message.edit_text(
+            f"ðŸ“ **Send the new Range for {country_name} (e.g. 26134):**",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("âŒ Cancel", callback_data=f"p_country:{provider}:{service_id}:{country_id}")]])
+        )
+
+    elif query.data.startswith("p_del_range:") and await is_admin(user_id):
+        _, provider, range_id = query.data.split(":", 2)
+        rng = await provider_ranges_col.find_one({"provider": provider, "range_id": range_id})
+        if not rng:
+            await query.answer("Range not found", show_alert=True)
+        else:
+            await provider_ranges_col.delete_one({"provider": provider, "range_id": range_id})
+            await query.answer("âœ… Range deleted", show_alert=True)
+            text, markup = await provider_country_screen(provider, rng["service_id"], rng["country_id"])
+            await query.message.edit_text(text, parse_mode="Markdown", reply_markup=markup)
+
+    elif query.data.startswith("p_search:") and await is_admin(user_id):
+        provider = query.data.split(":", 1)[1]
+        PROVIDER_STATE[user_id] = {"step": "SEARCH_COUNTRY", "provider": provider}
+        await query.answer()
+        await query.message.edit_text(
+            f"ðŸŒ **Search {provider_label(provider)} Country**\n\nSend a country name or part of it:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("âŒ Cancel", callback_data=f"p_control:{provider}")]])
+        )
+
+    # --- Provider user-facing service/country/number flow ---
+    elif query.data.startswith("psel_serv:"):
+        _, provider, service_id = query.data.split(":", 2)
+        svc = await provider_services_col.find_one({"provider": provider, "service_id": service_id})
+        if not svc:
+            await query.answer("Service unavailable", show_alert=True)
+        else:
+            countries = await provider_countries_col.find({"provider": provider, "service_id": service_id}).sort("name", 1).to_list(length=200)
+            if not countries:
+                await query.answer("No countries configured", show_alert=True)
+            else:
+                await query.answer()
+                keyboard = [[InlineKeyboardButton(f"{c.get('flag', country_flag(c.get('code', 'UN')))} {c['name']}", callback_data=f"psel_country:{provider}:{service_id}:{c['country_id']}")] for c in countries]
+                keyboard.append([InlineKeyboardButton("ðŸ”™ Back to Services", callback_data="get_number_menu")])
+                await query.message.edit_text(f"ðŸŒ **{svc['name']} â€” Select Country:**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif query.data.startswith("psel_country:"):
+        _, provider, service_id, country_id = query.data.split(":", 3)
+        svc = await provider_services_col.find_one({"provider": provider, "service_id": service_id})
+        country = await provider_countries_col.find_one({"provider": provider, "country_id": country_id})
+        ranges = await provider_ranges_col.find({"provider": provider, "service_id": service_id, "country_id": country_id}).to_list(length=500)
+        if not svc or not country or not ranges:
+            await query.answer("No ranges are configured for this country.", show_alert=True)
+        else:
+            key_docs = await provider_keys_col.find({"provider": provider}).to_list(length=100)
+            if not key_docs:
+                await query.answer("No API key is configured for this provider.", show_alert=True)
+            else:
+                await query.answer()
+                processing = await query.message.edit_text("â³ Requesting an authorized number from the provider API...")
+                key_doc = random.choice(key_docs)
+                api_key = decrypt_api_key(key_doc.get("encrypted_key", ""))
+                rng = random.choice(ranges)
+                phone, external_order_id, err = await request_number_from_provider(provider, api_key, svc["name"], country["name"], rng["range"])
+                if not phone:
+                    await processing.edit_text(
+                        "âŒ **Provider is currently unavailable.**\n\n"
+                        f"`{err or 'No number was returned.'}`",
+                        parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Other Countries", callback_data=f"psel_serv:{provider}:{service_id}")]])
+                    )
+                else:
+                    order_id = await create_provider_order(
+                        user_id, provider,
+                        {"key_id": key_doc["key_id"]}, svc,
+                        {**country, "country_id": country["country_id"]}, rng, phone, external_order_id
+                    )
+                    await processing.edit_text(
+                        f"ðŸŒ **{country['name']}** allocated for **{svc['name']}**\n\n"
+                        f"ðŸ“ž Number: `{phone}`\n"
+                        f"ðŸ†” Order: `#{order_id}`\n\n"
+                        "â³ Waiting for an authorized provider OTP event...",
+                        parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton(f"ðŸ“² ðŸ“‹ {phone}", copy_text=CopyTextButton(text=phone))],
+                            [InlineKeyboardButton("ðŸŒ Other Countries", callback_data=f"psel_serv:{provider}:{service_id}")],
+                            [InlineKeyboardButton("ðŸŒ OTP Group", url=OTP_GROUP_URL)],
+                        ])
+                    )
+
     elif query.data == "get_number_menu":
         await query.answer()
+        provider_service_docs = []
+        for provider in PROVIDERS:
+            svcs = await provider_services_col.find({"provider": provider}).sort("name", 1).to_list(length=200)
+            provider_service_docs.extend([(provider, svc) for svc in svcs])
         services = await numbers_col.distinct("service_name", {"status": "Available"})
-        if services:
-            keyboard = [[InlineKeyboardButton(f"📱 {s}", callback_data=f"sel_serv:{s}")] for s in services]
-            keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_main_menu")])
+        keyboard = []
+        for provider, svc in provider_service_docs:
+            keyboard.append([InlineKeyboardButton(
+                f"{svc.get('emoji', service_emoji(svc['name']))} {svc['name']} â€¢ {provider_label(provider)}",
+                callback_data=f"psel_serv:{provider}:{svc['service_id']}"
+            )])
+        for s in services:
+            keyboard.append([InlineKeyboardButton(f"ðŸ“± {s}", callback_data=f"sel_serv:{s}")])
+        if keyboard:
+            keyboard.append([InlineKeyboardButton("ðŸ”™ Back to Menu", callback_data="back_to_main_menu")])
             reply_markup = InlineKeyboardMarkup(keyboard)
-            text_msg = "📱 **Select a Service:**"
+            text_msg = "ðŸ“± **Select a Service:**"
         else:
-            reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_main_menu")]])
-            text_msg = "📱 **Get Number Menu**\n\n⚠️ বর্তমানে কোনো নাম্বার স্টক এ নেই!"
+            reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back to Menu", callback_data="back_to_main_menu")]])
+            text_msg = "ðŸ“± **Get Number Menu**\n\nâš ï¸ à¦¬à¦°à§à¦¤à¦®à¦¾à¦¨à§‡ à¦•à§‹à¦¨à§‹ à¦¨à¦¾à¦®à§à¦¬à¦¾à¦° à¦¸à§à¦Ÿà¦• à¦ à¦¨à§‡à¦‡!"
         try:
             await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
         except Exception:
@@ -1160,10 +1910,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         custom_welcome = await get_setting("start_menu_text", None)
         if not custom_welcome:
             welcome_text = (
-                f"🌐 **NUMBER PANEL**\n\n"
-                f"👋 Welcome, **{user.first_name}**\n"
-                f"🚀 Premium Number Management System\n\n"
-                f"⚡ Fast • Simple • Secure"
+                f"ðŸŒ **NUMBER PANEL**\n\n"
+                f"ðŸ‘‹ Welcome, **{user.first_name}**\n"
+                f"ðŸš€ Premium Number Management System\n\n"
+                f"âš¡ Fast â€¢ Simple â€¢ Secure"
             )
         else:
             welcome_text = custom_welcome.format(first_name=user.first_name, username=user.username or "N/A", user_id=user.id)
@@ -1179,13 +1929,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         service_name = query.data.split(":", 1)[1].strip()
         countries = await numbers_col.distinct("country", {"service_name": service_name, "status": "Available"})
         if countries:
-            keyboard = [[InlineKeyboardButton(f"🌍 {country}", callback_data=f"sel_count:{service_name}:{country}")] for country in countries]
-            keyboard.append([InlineKeyboardButton("🔙 Back to Services", callback_data="get_number_menu")])
+            keyboard = [[InlineKeyboardButton(f"ðŸŒ {country}", callback_data=f"sel_count:{service_name}:{country}")] for country in countries]
+            keyboard.append([InlineKeyboardButton("ðŸ”™ Back to Services", callback_data="get_number_menu")])
             reply_markup = InlineKeyboardMarkup(keyboard)
-            text_msg = f"🌍 **Select Country for `{service_name}`:**"
+            text_msg = f"ðŸŒ **Select Country for `{service_name}`:**"
         else:
-            reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Services", callback_data="get_number_menu")]])
-            text_msg = f"⚠️ `{service_name}` সার্ভিসে বর্তমানে কোনো কান্ট্রি এভেইলেবল নেই!"
+            reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back to Services", callback_data="get_number_menu")]])
+            text_msg = f"âš ï¸ `{service_name}` à¦¸à¦¾à¦°à§à¦­à¦¿à¦¸à§‡ à¦¬à¦°à§à¦¤à¦®à¦¾à¦¨à§‡ à¦•à§‹à¦¨à§‹ à¦•à¦¾à¦¨à§à¦Ÿà§à¦°à¦¿ à¦à¦­à§‡à¦‡à¦²à§‡à¦¬à¦² à¦¨à§‡à¦‡!"
         try:
             await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
         except Exception:
@@ -1220,25 +1970,25 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 })
             
             text_msg = (
-                f"🌍 {country} Allocated 💬 {service_name}\n"
-                f"🔗 Otp Rate : {current_otp_rate}৳\n"
-                f"⏳ Waiting for OTP...... ⬇️"
+                f"ðŸŒ {country} Allocated ðŸ’¬ {service_name}\n"
+                f"ðŸ”— Otp Rate : {current_otp_rate}à§³\n"
+                f"â³ Waiting for OTP...... â¬‡ï¸"
             )
             
             keyboard = []
             for doc in numbers:
                 num = doc['phone_number']
-                keyboard.append([InlineKeyboardButton(f"📲 📋 {num}", copy_text=CopyTextButton(text=num))])
+                keyboard.append([InlineKeyboardButton(f"ðŸ“² ðŸ“‹ {num}", copy_text=CopyTextButton(text=num))])
             
-            keyboard.append([InlineKeyboardButton("🔄 Change Number", callback_data=f"change_num:{service_name}:{country}")])
+            keyboard.append([InlineKeyboardButton("ðŸ”„ Change Number", callback_data=f"change_num:{service_name}:{country}")])
             keyboard.append([
-                InlineKeyboardButton("🌍 Other Countries", callback_data=f"sel_serv:{service_name}"),
-                InlineKeyboardButton("🌐 OTP Group", url=OTP_GROUP_URL)
+                InlineKeyboardButton("ðŸŒ Other Countries", callback_data=f"sel_serv:{service_name}"),
+                InlineKeyboardButton("ðŸŒ OTP Group", url=OTP_GROUP_URL)
             ])
             reply_markup = InlineKeyboardMarkup(keyboard)
         else:
-            text_msg = f"⚠️ দুঃখিত! `{service_name}` ({country}) এ বর্তমানে নতুন কোনো নাম্বার এভেইলেবল নেই।"
-            reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🌍 Other Countries", callback_data=f"sel_serv:{service_name}")]])
+            text_msg = f"âš ï¸ à¦¦à§à¦ƒà¦–à¦¿à¦¤! `{service_name}` ({country}) à¦ à¦¬à¦°à§à¦¤à¦®à¦¾à¦¨à§‡ à¦¨à¦¤à§à¦¨ à¦•à§‹à¦¨à§‹ à¦¨à¦¾à¦®à§à¦¬à¦¾à¦° à¦à¦­à§‡à¦‡à¦²à§‡à¦¬à¦² à¦¨à§‡à¦‡à¥¤"
+            reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("ðŸŒ Other Countries", callback_data=f"sel_serv:{service_name}")]])
         
         try:
             await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
@@ -1268,16 +2018,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "country": "Custom"
                 })
             
-            text_msg = f"🔎 **SEARCH RESULTS** (Prefix: `{prefix}`)"
+            text_msg = f"ðŸ”Ž **SEARCH RESULTS** (Prefix: `{prefix}`)"
             keyboard = []
             for doc in numbers:
                 num = doc['phone_number']
-                keyboard.append([InlineKeyboardButton(f"📲 📋 {num}", copy_text=CopyTextButton(text=num))])
+                keyboard.append([InlineKeyboardButton(f"ðŸ“² ðŸ“‹ {num}", copy_text=CopyTextButton(text=num))])
             
-            keyboard.append([InlineKeyboardButton("🔄 Change Number", callback_data=f"search_next:{prefix}")])
+            keyboard.append([InlineKeyboardButton("ðŸ”„ Change Number", callback_data=f"search_next:{prefix}")])
             keyboard.append([
-                InlineKeyboardButton("🌍 Other Countries", callback_data="get_number_menu"),
-                InlineKeyboardButton("🌐 OTP Group", url=OTP_GROUP_URL)
+                InlineKeyboardButton("ðŸŒ Other Countries", callback_data="get_number_menu"),
+                InlineKeyboardButton("ðŸŒ OTP Group", url=OTP_GROUP_URL)
             ])
             reply_markup = InlineKeyboardMarkup(keyboard)
             try:
@@ -1286,76 +2036,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=reply_markup)
         else:
             await query.message.edit_text(
-                f"❌ এই সিরিয়াল বা প্রফিক্সের (`{prefix}`) আর কোনো নাম্বার এভেইলেবল নেই!",
+                f"âŒ à¦à¦‡ à¦¸à¦¿à¦°à¦¿à§Ÿà¦¾à¦² à¦¬à¦¾ à¦ªà§à¦°à¦«à¦¿à¦•à§à¦¸à§‡à¦° (`{prefix}`) à¦†à¦° à¦•à§‹à¦¨à§‹ à¦¨à¦¾à¦®à§à¦¬à¦¾à¦° à¦à¦­à§‡à¦‡à¦²à§‡à¦¬à¦² à¦¨à§‡à¦‡!",
                 parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🌍 Other Countries", callback_data="get_number_menu")]] )
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ðŸŒ Other Countries", callback_data="get_number_menu")]] )
             )
 
-# --- General Group Listener for OTP and RanaX Auto-Forwarding ---
+# --- Group listener intentionally does not inspect or forward OTPs. ---
+# OTP delivery is handled only by the authorized provider webhook/API above.
 async def otp_group_listener(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-    if not message or not message.text:
-        return
-    
-    chat_id = str(message.chat_id)
-    text = message.text
-
-    # --- 1. RanaX External Source Forwarding System ---
-    ranax_status = await get_setting("ranax_status", "ON")
-    if ranax_status == "ON":
-        source_doc = await ranax_groups_col.find_one({"chat_id": chat_id})
-        if source_doc:
-            forward_groups = await forward_groups_col.find({}).to_list(length=50)
-            target_ids = [fg.get("group_id") for fg in forward_groups]
-            if not target_ids:
-                target_ids = [OTP_GROUP_URL]
-
-            for tid in target_ids:
-                try:
-                    await context.bot.send_message(
-                        chat_id=tid,
-                        text=f"🔄 **RanaX Auto-Forwarded OTP:**\n\n{text}",
-                        parse_mode="Markdown"
-                    )
-                except Exception:
-                    pass
-
-    # --- 2. Main Bot User Number Matcher System ---
-    current_otp_rate = float(await get_setting("otp_rate", 0.60))
-
-    async for assigned_doc in assigned_col.find({}):
-        phone = assigned_doc["phone_number"]
-        if phone in text:
-            user_id = assigned_doc["user_id"]
-            service = assigned_doc["service_name"]
-            
-            await numbers_col.update_one({"phone_number": phone}, {"$set": {"status": "Used"}})
-            
-            await users_col.update_one(
-                {"user_id": user_id},
-                {"$inc": {"balance": current_otp_rate, "total_earned": current_otp_rate}}
-            )
-            
-            user_msg = (
-                f"💬 #OTP_Received `{phone}`\n"
-                f"📥 **OTP Received!**\n\n"
-                f"💬 `{text}`\n\n"
-                f"💵 Added to Balance: `+{current_otp_rate}৳`"
-            )
-            
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"📱 {service}", callback_data="get_number_menu")]
-            ])
-            
-            try:
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=user_msg,
-                    parse_mode="Markdown",
-                    reply_markup=keyboard
-                )
-            except Exception:
-                pass
+    return
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1369,16 +2058,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_doc = await users_col.find_one({"user_id": user_id})
     if user_doc and user_doc.get("banned", False):
-        await update.message.reply_text("❌ আপনি এই বট থেকে ব্যান হয়েছেন।")
+        await update.message.reply_text("âŒ à¦†à¦ªà¦¨à¦¿ à¦à¦‡ à¦¬à¦Ÿ à¦¥à§‡à¦•à§‡ à¦¬à§à¦¯à¦¾à¦¨ à¦¹à§Ÿà§‡à¦›à§‡à¦¨à¥¤")
         return
 
-    if text == "🔙 Back":
-        for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_STATE]:
+    if text == "ðŸ”™ Back":
+        for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_STATE, PROVIDER_STATE]:
             if user_id in state_dict:
                 del state_dict[user_id]
             
         reply_markup = await build_main_menu(user_id)
-        await update.message.reply_text("👇 Main Menu:", reply_markup=reply_markup)
+        await update.message.reply_text("ðŸ‘‡ Main Menu:", reply_markup=reply_markup)
         return
 
     is_joined = await check_force_join(user_id, context)
@@ -1387,19 +2076,133 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         inline_kb = []
         if channels_list:
             for ch in channels_list:
-                inline_kb.append([InlineKeyboardButton(f"📢 Join {ch.get('name')}", url=ch.get('url'))])
+                inline_kb.append([InlineKeyboardButton(f"ðŸ“¢ Join {ch.get('name')}", url=ch.get('url'))])
         else:
-            inline_kb.append([InlineKeyboardButton("📢 Join Main Channel", url=MAIN_CHANNEL_URL)])
-            inline_kb.append([InlineKeyboardButton("📢 Join Update Channel", url=UPDATE_CHANNEL_URL)])
+            inline_kb.append([InlineKeyboardButton("ðŸ“¢ Join Main Channel", url=MAIN_CHANNEL_URL)])
+            inline_kb.append([InlineKeyboardButton("ðŸ“¢ Join Update Channel", url=UPDATE_CHANNEL_URL)])
             
-        inline_kb.append([InlineKeyboardButton("💬 Join OTP Group", url=OTP_GROUP_URL)])
-        inline_kb.append([InlineKeyboardButton("✅ Joined / Check", callback_data="check_join")])
+        inline_kb.append([InlineKeyboardButton("ðŸ’¬ Join OTP Group", url=OTP_GROUP_URL)])
+        inline_kb.append([InlineKeyboardButton("âœ… Joined / Check", callback_data="check_join")])
 
         await update.message.reply_text(
-            "⚠️ আপনি চ্যানেল বা গ্রুপ থেকে লিভ নিয়েছেন!\nবট ব্যবহার করতে হলে আবার জয়েন করে চেক করুন:",
+            "âš ï¸ à¦†à¦ªà¦¨à¦¿ à¦šà§à¦¯à¦¾à¦¨à§‡à¦² à¦¬à¦¾ à¦—à§à¦°à§à¦ª à¦¥à§‡à¦•à§‡ à¦²à¦¿à¦­ à¦¨à¦¿à§Ÿà§‡à¦›à§‡à¦¨!\nà¦¬à¦Ÿ à¦¬à§à¦¯à¦¬à¦¹à¦¾à¦° à¦•à¦°à¦¤à§‡ à¦¹à¦²à§‡ à¦†à¦¬à¦¾à¦° à¦œà§Ÿà§‡à¦¨ à¦•à¦°à§‡ à¦šà§‡à¦• à¦•à¦°à§à¦¨:",
             reply_markup=InlineKeyboardMarkup(inline_kb)
         )
         return
+
+    # --- Dynamic Provider Management State Handler ---
+    if await is_admin(user_id) and user_id in PROVIDER_STATE:
+        state = PROVIDER_STATE[user_id]
+        step = state.get("step")
+        provider = state.get("provider")
+
+        if step == "API_KEY":
+            api_key = text.strip()
+            if not api_key or len(api_key) > 512:
+                await update.message.reply_text("âŒ Invalid API Key", reply_markup=back_keyboard())
+                return
+            valid = await validate_provider_key(provider, api_key)
+            if not valid:
+                await update.message.reply_text("âŒ Invalid API Key", reply_markup=back_keyboard())
+                return
+            key_id = uuid4().hex[:8]
+            await provider_keys_col.insert_one({
+                "provider": provider, "key_id": key_id,
+                "encrypted_key": encrypt_api_key(api_key),
+                "masked": mask_secret(api_key), "created_at": now_iso()
+            })
+            del PROVIDER_STATE[user_id]
+            await update.message.reply_text("âœ… API key saved successfully.")
+            text_panel, markup = await provider_panel_markup(provider)
+            await update.message.reply_text(text_panel, parse_mode="Markdown", reply_markup=markup)
+            return
+
+        if step == "SERVICE_NAME":
+            service = normalize_service(text)
+            if not service:
+                await update.message.reply_text("âŒ Service name cannot be empty.", reply_markup=back_keyboard())
+                return
+            exists = await provider_services_col.find_one({"provider": provider, "name": service})
+            if exists:
+                await update.message.reply_text("âš ï¸ This service already exists.", reply_markup=back_keyboard())
+                return
+            service_id = uuid4().hex[:8]
+            await provider_services_col.insert_one({
+                "provider": provider, "service_id": service_id,
+                "name": service, "emoji": service_emoji(service), "created_at": now_iso()
+            })
+            del PROVIDER_STATE[user_id]
+            text_panel, markup = await provider_services_markup(provider)
+            await update.message.reply_text(text_panel, parse_mode="Markdown", reply_markup=markup)
+            return
+
+        if step == "COUNTRY_NAME":
+            country = normalize_country(text)
+            if not country:
+                await update.message.reply_text("âŒ Country name cannot be empty.", reply_markup=back_keyboard())
+                return
+            exists = await provider_countries_col.find_one({"provider": provider, "service_id": state["service_id"], "name": country})
+            if exists:
+                await update.message.reply_text("âš ï¸ This country already exists for this service.", reply_markup=back_keyboard())
+                return
+            code = country_code_from_name(country)
+            country_id = uuid4().hex[:8]
+            await provider_countries_col.insert_one({
+                "provider": provider, "service_id": state["service_id"], "country_id": country_id,
+                "name": country, "code": code, "flag": country_flag(code), "created_at": now_iso()
+            })
+            service_id = state["service_id"]
+            del PROVIDER_STATE[user_id]
+            text_panel, markup = await provider_service_screen(provider, service_id)
+            await update.message.reply_text(text_panel, parse_mode="Markdown", reply_markup=markup)
+            return
+
+        if step == "RANGE":
+            range_value = normalize_range(text)
+            if not range_value or not re.search(r"\d", range_value):
+                await update.message.reply_text("âŒ Invalid range.", reply_markup=back_keyboard())
+                return
+            exists = await provider_ranges_col.find_one({
+                "provider": provider, "service_id": state["service_id"],
+                "country_id": state["country_id"], "range": range_value
+            })
+            if exists:
+                await update.message.reply_text("âš ï¸ This range already exists.", reply_markup=back_keyboard())
+                return
+            range_id = uuid4().hex[:8]
+            await provider_ranges_col.insert_one({
+                "provider": provider, "service_id": state["service_id"],
+                "country_id": state["country_id"], "range_id": range_id,
+                "range": range_value, "created_at": now_iso()
+            })
+            service_id, country_id = state["service_id"], state["country_id"]
+            del PROVIDER_STATE[user_id]
+            text_panel, markup = await provider_country_screen(provider, service_id, country_id)
+            await update.message.reply_text(text_panel, parse_mode="Markdown", reply_markup=markup)
+            return
+
+        if step == "SEARCH_COUNTRY":
+            query_text = normalize_name(text).lower()
+            del PROVIDER_STATE[user_id]
+            matches = await provider_countries_col.find({
+                "provider": provider,
+                "name": {"$regex": re.escape(query_text), "$options": "i"}
+            }).to_list(length=100)
+            if not matches:
+                await update.message.reply_text("âš ï¸ No configured countries matched your search.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”™ Back", callback_data=f"p_control:{provider}")]]))
+                return
+            keyboard = []
+            for c in matches:
+                keyboard.append([InlineKeyboardButton(
+                    f"{c.get('flag', 'ðŸŒ')} {c['name']}",
+                    callback_data=f"p_country:{provider}:{c['service_id']}:{c['country_id']}"
+                )])
+            keyboard.append([InlineKeyboardButton("ðŸ”™ Back", callback_data=f"p_control:{provider}")])
+            await update.message.reply_text(
+                f"ðŸŒ **{provider_label(provider)} Country Search**\n\nResults for `{query_text}`:",
+                parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return
 
     # --- Admin OTP Group Test State Handler (Without TEST indicator) ---
     if await is_admin(user_id) and user_id in TEST_STATE:
@@ -1410,7 +2213,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             service = text.strip()
             if not service:
                 await update.message.reply_text(
-                    "❌ Service নাম খালি রাখা যাবে না। আবার লিখুন:",
+                    "âŒ Service à¦¨à¦¾à¦® à¦–à¦¾à¦²à¦¿ à¦°à¦¾à¦–à¦¾ à¦¯à¦¾à¦¬à§‡ à¦¨à¦¾à¥¤ à¦†à¦¬à¦¾à¦° à¦²à¦¿à¦–à§à¦¨:",
                     reply_markup=back_keyboard()
                 )
                 return
@@ -1418,8 +2221,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state["step"] = "GET_NUMBER"
             TEST_STATE[user_id] = state
             await update.message.reply_text(
-                "📞 এবার **Phone Number** লিখুন。\n\n"
-                "উদাহরণ: `+601862810138`",
+                "ðŸ“ž à¦à¦¬à¦¾à¦° **Phone Number** à¦²à¦¿à¦–à§à¦¨ã€‚\n\n"
+                "à¦‰à¦¦à¦¾à¦¹à¦°à¦£: `+601862810138`",
                 parse_mode="Markdown",
                 reply_markup=back_keyboard()
             )
@@ -1430,8 +2233,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             normalized = re.sub(r"[^\d+]", "", phone)
             if not re.fullmatch(r"\+\d{7,15}", normalized):
                 await update.message.reply_text(
-                    "❌ সঠিক আন্তর্জাতিক Phone Number দিন।\n"
-                    "উদাহরণ: `+601862810138`",
+                    "âŒ à¦¸à¦ à¦¿à¦• à¦†à¦¨à§à¦¤à¦°à§à¦œà¦¾à¦¤à¦¿à¦• Phone Number à¦¦à¦¿à¦¨à¥¤\n"
+                    "à¦‰à¦¦à¦¾à¦¹à¦°à¦£: `+601862810138`",
                     parse_mode="Markdown",
                     reply_markup=back_keyboard()
                 )
@@ -1441,8 +2244,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state["step"] = "GET_COUNTRY"
             TEST_STATE[user_id] = state
             await update.message.reply_text(
-                "🌍 এবার **Country Short Code** লিখুন।\n\n"
-                "শুধু 2টি অক্ষর দিন — যেমন: `MY`, `BD`, `ID`, `FR`, `US`",
+                "ðŸŒ à¦à¦¬à¦¾à¦° **Country Short Code** à¦²à¦¿à¦–à§à¦¨à¥¤\n\n"
+                "à¦¶à§à¦§à§ 2à¦Ÿà¦¿ à¦…à¦•à§à¦·à¦° à¦¦à¦¿à¦¨ â€” à¦¯à§‡à¦®à¦¨: `MY`, `BD`, `ID`, `FR`, `US`",
                 parse_mode="Markdown",
                 reply_markup=back_keyboard()
             )
@@ -1452,8 +2255,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             country = text.strip().upper()
             if not re.fullmatch(r"[A-Z]{2}", country):
                 await update.message.reply_text(
-                    "❌ Country Short Code অবশ্যই 2টি ইংরেজি অক্ষর হতে হবে।\n"
-                    "উদাহরণ: `MY` / `BD` / `ID`",
+                    "âŒ Country Short Code à¦…à¦¬à¦¶à§à¦¯à¦‡ 2à¦Ÿà¦¿ à¦‡à¦‚à¦°à§‡à¦œà¦¿ à¦…à¦•à§à¦·à¦° à¦¹à¦¤à§‡ à¦¹à¦¬à§‡à¥¤\n"
+                    "à¦‰à¦¦à¦¾à¦¹à¦°à¦£: `MY` / `BD` / `ID`",
                     parse_mode="Markdown",
                     reply_markup=back_keyboard()
                 )
@@ -1463,9 +2266,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state["step"] = "GET_OTP"
             TEST_STATE[user_id] = state
             await update.message.reply_text(
-                f"🌍 Country: `{country}`\n\n"
-                "🔐 এবার **OTP Code** লিখুন。\n"
-                "উদাহরণ: `054627`",
+                f"ðŸŒ Country: `{country}`\n\n"
+                "ðŸ” à¦à¦¬à¦¾à¦° **OTP Code** à¦²à¦¿à¦–à§à¦¨ã€‚\n"
+                "à¦‰à¦¦à¦¾à¦¹à¦°à¦£: `054627`",
                 parse_mode="Markdown",
                 reply_markup=back_keyboard()
             )
@@ -1475,8 +2278,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             otp = text.strip()
             if not re.fullmatch(r"\d{4,8}", otp):
                 await update.message.reply_text(
-                    "❌ OTP অবশ্যই 4–8 সংখ্যার হতে হবে।\n"
-                    "উদাহরণ: `054627`",
+                    "âŒ OTP à¦…à¦¬à¦¶à§à¦¯à¦‡ 4â€“8 à¦¸à¦‚à¦–à§à¦¯à¦¾à¦° à¦¹à¦¤à§‡ à¦¹à¦¬à§‡à¥¤\n"
+                    "à¦‰à¦¦à¦¾à¦¹à¦°à¦£: `054627`",
                     parse_mode="Markdown",
                     reply_markup=back_keyboard()
                 )
@@ -1486,8 +2289,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state["step"] = "GET_LANGUAGE"
             TEST_STATE[user_id] = state
             await update.message.reply_text(
-                "🌐 এবার **Language Code** লিখুন。\n\n"
-                "শুধু 2টি অক্ষর দিন, যেমন: `EN`, `FR`, `ID`",
+                "ðŸŒ à¦à¦¬à¦¾à¦° **Language Code** à¦²à¦¿à¦–à§à¦¨ã€‚\n\n"
+                "à¦¶à§à¦§à§ 2à¦Ÿà¦¿ à¦…à¦•à§à¦·à¦° à¦¦à¦¿à¦¨, à¦¯à§‡à¦®à¦¨: `EN`, `FR`, `ID`",
                 parse_mode="Markdown",
                 reply_markup=back_keyboard()
             )
@@ -1497,8 +2300,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             language = text.strip().upper()
             if not re.fullmatch(r"[A-Z]{2}", language):
                 await update.message.reply_text(
-                    "❌ Language Code অবশ্যই 2টি অক্ষরের হতে হবে।\n"
-                    "উদাহরণ: `EN` / `FR` / `ID`",
+                    "âŒ Language Code à¦…à¦¬à¦¶à§à¦¯à¦‡ 2à¦Ÿà¦¿ à¦…à¦•à§à¦·à¦°à§‡à¦° à¦¹à¦¤à§‡ à¦¹à¦¬à§‡à¥¤\n"
+                    "à¦‰à¦¦à¦¾à¦¹à¦°à¦£: `EN` / `FR` / `ID`",
                     parse_mode="Markdown",
                     reply_markup=back_keyboard()
                 )
@@ -1511,7 +2314,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del TEST_STATE[user_id]
 
             processing = await update.message.reply_text(
-                "⏳ Test OTP configured OTP group-এ পাঠানো হচ্ছে..."
+                "â³ Test OTP configured OTP group-à¦ à¦ªà¦¾à¦ à¦¾à¦¨à§‹ à¦¹à¦šà§à¦›à§‡..."
             )
 
             success, failed, total = await send_test_otp_to_configured_groups(
@@ -1529,15 +2332,15 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
 
             result_text = (
-                "🧪 **OTP Group Test Complete**\n\n"
-                f"📱 Service: `{service}`\n"
-                f"📞 Number: `{phone}`\n"
-                f"🌍 Country: `{country}`\n"
-                f"🔐 OTP: `{otp}`\n"
-                f"🌐 Language: `{language}`\n\n"
-                f"📤 Groups Found: `{total}`\n"
-                f"✅ Sent: `{success}`\n"
-                f"❌ Failed: `{failed}`"
+                "ðŸ§ª **OTP Group Test Complete**\n\n"
+                f"ðŸ“± Service: `{service}`\n"
+                f"ðŸ“ž Number: `{phone}`\n"
+                f"ðŸŒ Country: `{country}`\n"
+                f"ðŸ” OTP: `{otp}`\n"
+                f"ðŸŒ Language: `{language}`\n\n"
+                f"ðŸ“¤ Groups Found: `{total}`\n"
+                f"âœ… Sent: `{success}`\n"
+                f"âŒ Failed: `{failed}`"
             )
             try:
                 await processing.edit_text(result_text, parse_mode="Markdown")
@@ -1565,7 +2368,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db_key = key_mapping.get(action)
         if db_key:
             await set_setting(db_key, new_val)
-            await update.message.reply_text(f"✅ সফলভাবে আপডেট করা হয়েছে!\n\nনতুন মান: `{new_val}`", parse_mode="Markdown")
+            await update.message.reply_text(f"âœ… à¦¸à¦«à¦²à¦­à¦¾à¦¬à§‡ à¦†à¦ªà¦¡à§‡à¦Ÿ à¦•à¦°à¦¾ à¦¹à§Ÿà§‡à¦›à§‡!\n\nà¦¨à¦¤à§à¦¨ à¦®à¦¾à¦¨: `{new_val}`", parse_mode="Markdown")
         return
 
     # --- RanaX Source Chat ID Add State Handler ---
@@ -1576,7 +2379,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state["name"] = text.strip()
             state["step"] = "GET_CHAT_ID"
             RANAX_ADD_STATE[user_id] = state
-            await update.message.reply_text("🔗 এখন ওই সোর্স গ্রুপ বা চ্যানেলের **Chat ID** (যেমন: `-100xxxxxxxxxx`) লিখে পাঠান:")
+            await update.message.reply_text("ðŸ”— à¦à¦–à¦¨ à¦“à¦‡ à¦¸à§‹à¦°à§à¦¸ à¦—à§à¦°à§à¦ª à¦¬à¦¾ à¦šà§à¦¯à¦¾à¦¨à§‡à¦²à§‡à¦° **Chat ID** (à¦¯à§‡à¦®à¦¨: `-100xxxxxxxxxx`) à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨:")
             return
         elif step == "GET_CHAT_ID":
             chat_id_val = text.strip()
@@ -1586,7 +2389,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 upsert=True
             )
             del RANAX_ADD_STATE[user_id]
-            await update.message.reply_text("✅ RanaX Source Chat ID সফলভাবে যুক্ত করা হয়েছে! এখন থেকে ঐ গ্রুপ থেকে ওটিপি ফরোয়ার্ড হয়ে আসবে।")
+            await update.message.reply_text("âœ… RanaX Source Chat ID à¦¸à¦«à¦²à¦­à¦¾à¦¬à§‡ à¦¯à§à¦•à§à¦¤ à¦•à¦°à¦¾ à¦¹à§Ÿà§‡à¦›à§‡! à¦à¦–à¦¨ à¦¥à§‡à¦•à§‡ à¦ à¦—à§à¦°à§à¦ª à¦¥à§‡à¦•à§‡ à¦“à¦Ÿà¦¿à¦ªà¦¿ à¦«à¦°à§‹à§Ÿà¦¾à¦°à§à¦¡ à¦¹à§Ÿà§‡ à¦†à¦¸à¦¬à§‡à¥¤")
             return
 
     if user_id == OWNER_ID and user_id in ADMIN_ADD_STATE:
@@ -1602,9 +2405,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if target_id:
             await admins_col.update_one({"user_id": target_id}, {"$set": {"user_id": target_id, "username": target_val}}, upsert=True)
-            await update.message.reply_text(f"✅ সফলভাবে ইউজার `{target_id}` কে এডমিন হিসেবে যুক্ত করা হয়েছে!", parse_mode="Markdown")
+            await update.message.reply_text(f"âœ… à¦¸à¦«à¦²à¦­à¦¾à¦¬à§‡ à¦‡à¦‰à¦œà¦¾à¦° `{target_id}` à¦•à§‡ à¦à¦¡à¦®à¦¿à¦¨ à¦¹à¦¿à¦¸à§‡à¦¬à§‡ à¦¯à§à¦•à§à¦¤ à¦•à¦°à¦¾ à¦¹à§Ÿà§‡à¦›à§‡!", parse_mode="Markdown")
         else:
-            await update.message.reply_text("❌ ইউজার খুঁজে পাওয়া যায়নি। সঠিক আইডি বা ইউজারনেম দিন।")
+            await update.message.reply_text("âŒ à¦‡à¦‰à¦œà¦¾à¦° à¦–à§à¦à¦œà§‡ à¦ªà¦¾à¦“à§Ÿà¦¾ à¦¯à¦¾à§Ÿà¦¨à¦¿à¥¤ à¦¸à¦ à¦¿à¦• à¦†à¦‡à¦¡à¦¿ à¦¬à¦¾ à¦‡à¦‰à¦œà¦¾à¦°à¦¨à§‡à¦® à¦¦à¦¿à¦¨à¥¤")
         return
 
     if await is_admin(user_id) and user_id in CHANNEL_ADD_STATE:
@@ -1614,13 +2417,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state["name"] = text.strip()
             state["step"] = "GET_ID"
             CHANNEL_ADD_STATE[user_id] = state
-            await update.message.reply_text("🔗 এখন চ্যানেলের চ্যাট আইডি (যেমন: `@mychannel` বা `-100...`) লিখে পাঠান:")
+            await update.message.reply_text("ðŸ”— à¦à¦–à¦¨ à¦šà§à¦¯à¦¾à¦¨à§‡à¦²à§‡à¦° à¦šà§à¦¯à¦¾à¦Ÿ à¦†à¦‡à¦¡à¦¿ (à¦¯à§‡à¦®à¦¨: `@mychannel` à¦¬à¦¾ `-100...`) à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨:")
             return
         elif step == "GET_ID":
             state["chat_id"] = text.strip()
             state["step"] = "GET_URL"
             CHANNEL_ADD_STATE[user_id] = state
-            await update.message.reply_text("🌐 এখন চ্যানেলের ইনভাইট লিংক লিখে পাঠান:")
+            await update.message.reply_text("ðŸŒ à¦à¦–à¦¨ à¦šà§à¦¯à¦¾à¦¨à§‡à¦²à§‡à¦° à¦‡à¦¨à¦­à¦¾à¦‡à¦Ÿ à¦²à¦¿à¦‚à¦• à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨:")
             return
         elif step == "GET_URL":
             state["url"] = text.strip()
@@ -1630,7 +2433,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 upsert=True
             )
             del CHANNEL_ADD_STATE[user_id]
-            await update.message.reply_text("✅ ফোর্স জয়েন চ্যানেল সফলভাবে যুক্ত করা হয়েছে!")
+            await update.message.reply_text("âœ… à¦«à§‹à¦°à§à¦¸ à¦œà§Ÿà§‡à¦¨ à¦šà§à¦¯à¦¾à¦¨à§‡à¦² à¦¸à¦«à¦²à¦­à¦¾à¦¬à§‡ à¦¯à§à¦•à§à¦¤ à¦•à¦°à¦¾ à¦¹à§Ÿà§‡à¦›à§‡!")
             return
 
     if await is_admin(user_id) and user_id in FORWARD_GROUP_ADD_STATE:
@@ -1640,7 +2443,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             gid = text.strip()
             await forward_groups_col.update_one({"group_id": gid}, {"$set": {"group_id": gid}}, upsert=True)
             del FORWARD_GROUP_ADD_STATE[user_id]
-            await update.message.reply_text(f"✅ ফরওয়ার্ড গ্রুপ `{gid}` সফলভাবে যুক্ত করা হয়েছে!")
+            await update.message.reply_text(f"âœ… à¦«à¦°à¦“à§Ÿà¦¾à¦°à§à¦¡ à¦—à§à¦°à§à¦ª `{gid}` à¦¸à¦«à¦²à¦­à¦¾à¦¬à§‡ à¦¯à§à¦•à§à¦¤ à¦•à¦°à¦¾ à¦¹à§Ÿà§‡à¦›à§‡!")
             return
 
     if await is_admin(user_id) and user_id in USER_MANAGE_STATE:
@@ -1655,31 +2458,31 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             target_user = await users_col.find_one({"username": target_val.lstrip("@")})
 
         if not target_user:
-            await update.message.reply_text("❌ ইউজার ডাটাবেজে পাওয়া যায়নি।")
+            await update.message.reply_text("âŒ à¦‡à¦‰à¦œà¦¾à¦° à¦¡à¦¾à¦Ÿà¦¾à¦¬à§‡à¦œà§‡ à¦ªà¦¾à¦“à§Ÿà¦¾ à¦¯à¦¾à§Ÿà¦¨à¦¿à¥¤")
             return
 
         u_id = target_user["user_id"]
         if action == "balance":
             USER_MANAGE_STATE[user_id] = {"action": "do_balance", "target_id": u_id}
-            await update.message.reply_text(f"👤 User: `{u_id}`\n বর্তমান ব্যালেন্স: `{target_user.get('balance', 0.0)}৳`\n\nনতুন ব্যালেন্স অ্যামাউন্ট বা পরিবর্তন করার পরিমাণ লিখে পাঠান:")
+            await update.message.reply_text(f"ðŸ‘¤ User: `{u_id}`\n à¦¬à¦°à§à¦¤à¦®à¦¾à¦¨ à¦¬à§à¦¯à¦¾à¦²à§‡à¦¨à§à¦¸: `{target_user.get('balance', 0.0)}à§³`\n\nà¦¨à¦¤à§à¦¨ à¦¬à§à¦¯à¦¾à¦²à§‡à¦¨à§à¦¸ à¦…à§à¦¯à¦¾à¦®à¦¾à¦‰à¦¨à§à¦Ÿ à¦¬à¦¾ à¦ªà¦°à¦¿à¦¬à¦°à§à¦¤à¦¨ à¦•à¦°à¦¾à¦° à¦ªà¦°à¦¿à¦®à¦¾à¦£ à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨:")
             return
         elif action == "ban":
             current_ban = target_user.get("banned", False)
             new_ban = not current_ban
             await users_col.update_one({"user_id": u_id}, {"$set": {"banned": new_ban}})
-            status_str = "ব্যান করা হয়েছে" if new_ban else "আনব্যান করা হয়েছে"
-            await update.message.reply_text(f"✅ ইউজার `{u_id}` সফলভাবে {status_str}।")
+            status_str = "à¦¬à§à¦¯à¦¾à¦¨ à¦•à¦°à¦¾ à¦¹à§Ÿà§‡à¦›à§‡" if new_ban else "à¦†à¦¨à¦¬à§à¦¯à¦¾à¦¨ à¦•à¦°à¦¾ à¦¹à§Ÿà§‡à¦›à§‡"
+            await update.message.reply_text(f"âœ… à¦‡à¦‰à¦œà¦¾à¦° `{u_id}` à¦¸à¦«à¦²à¦­à¦¾à¦¬à§‡ {status_str}à¥¤")
             return
         elif action == "profile":
             total_nums = await assigned_col.count_documents({"user_id": u_id})
             profile_text = (
-                f"👤 **User Profile Details**\n\n"
-                f"🆔 ID: `{u_id}`\n"
-                f"🔗 Username: @{target_user.get('username', 'N/A')}\n"
-                f"💰 Balance: `{target_user.get('balance', 0.0):.2f}৳`\n"
-                f"📈 Total Earned: `{target_user.get('total_earned', 0.0):.2f}৳`\n"
-                f"📱 Total Used/Assigned Numbers: `{total_nums}`\n"
-                f"🚫 Banned Status: `{target_user.get('banned', False)}`"
+                f"ðŸ‘¤ **User Profile Details**\n\n"
+                f"ðŸ†” ID: `{u_id}`\n"
+                f"ðŸ”— Username: @{target_user.get('username', 'N/A')}\n"
+                f"ðŸ’° Balance: `{target_user.get('balance', 0.0):.2f}à§³`\n"
+                f"ðŸ“ˆ Total Earned: `{target_user.get('total_earned', 0.0):.2f}à§³`\n"
+                f"ðŸ“± Total Used/Assigned Numbers: `{total_nums}`\n"
+                f"ðŸš« Banned Status: `{target_user.get('banned', False)}`"
             )
             await update.message.reply_text(profile_text, parse_mode="Markdown")
             return
@@ -1691,9 +2494,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             val = float(text.strip())
             await users_col.update_one({"user_id": target_id}, {"$set": {"balance": val}})
-            await update.message.reply_text(f"✅ ইউজার `{target_id}` এর নতুন ব্যালেন্স সেট করা হয়েছে: `{val}৳`")
+            await update.message.reply_text(f"âœ… à¦‡à¦‰à¦œà¦¾à¦° `{target_id}` à¦à¦° à¦¨à¦¤à§à¦¨ à¦¬à§à¦¯à¦¾à¦²à§‡à¦¨à§à¦¸ à¦¸à§‡à¦Ÿ à¦•à¦°à¦¾ à¦¹à§Ÿà§‡à¦›à§‡: `{val}à§³`")
         except ValueError:
-            await update.message.reply_text("❌ সঠিক সংখ্যা দিন।")
+            await update.message.reply_text("âŒ à¦¸à¦ à¦¿à¦• à¦¸à¦‚à¦–à§à¦¯à¦¾ à¦¦à¦¿à¦¨à¥¤")
         return
 
     if await is_admin(user_id) and user_id in ADMIN_SETTINGS_STATE:
@@ -1703,68 +2506,68 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if setting_type == "edit_otp_link":
             await set_setting("otp_button_link", val)
-            await update.message.reply_text(f"✅ OTP Button Link updated to: `{val}`", parse_mode="Markdown")
+            await update.message.reply_text(f"âœ… OTP Button Link updated to: `{val}`", parse_mode="Markdown")
             return
         elif setting_type == "set_min_withdraw":
             try:
                 num = float(val)
                 await set_setting("min_withdraw", num)
-                await update.message.reply_text(f"✅ Min Withdraw updated to: `{num}৳`")
+                await update.message.reply_text(f"âœ… Min Withdraw updated to: `{num}à§³`")
             except ValueError:
-                await update.message.reply_text("❌ সঠিক সংখ্যা দিন।")
+                await update.message.reply_text("âŒ à¦¸à¦ à¦¿à¦• à¦¸à¦‚à¦–à§à¦¯à¦¾ à¦¦à¦¿à¦¨à¥¤")
             return
         elif setting_type == "set_ref_bonus":
             try:
                 num = float(val)
                 await set_setting("ref_bonus", num)
-                await update.message.reply_text(f"✅ Referral Bonus updated to: `{num}৳`")
+                await update.message.reply_text(f"âœ… Referral Bonus updated to: `{num}à§³`")
             except ValueError:
-                await update.message.reply_text("❌ সঠিক সংখ্যা দিন।")
+                await update.message.reply_text("âŒ à¦¸à¦ à¦¿à¦• à¦¸à¦‚à¦–à§à¦¯à¦¾ à¦¦à¦¿à¦¨à¥¤")
             return
         elif setting_type == "set_otp_rate":
             try:
                 num = float(val)
                 await set_setting("otp_rate", num)
-                await update.message.reply_text(f"✅ OTP Rate updated to: `{num}৳`")
+                await update.message.reply_text(f"âœ… OTP Rate updated to: `{num}à§³`")
             except ValueError:
-                await update.message.reply_text("❌ সঠিক সংখ্যা দিন।")
+                await update.message.reply_text("âŒ à¦¸à¦ à¦¿à¦• à¦¸à¦‚à¦–à§à¦¯à¦¾ à¦¦à¦¿à¦¨à¥¤")
             return
         elif setting_type == "set_num_req":
             try:
                 num = int(val)
                 await set_setting("num_request_count", num)
-                await update.message.reply_text(f"✅ Numbers per request updated to: `{num}`")
+                await update.message.reply_text(f"âœ… Numbers per request updated to: `{num}`")
             except ValueError:
-                await update.message.reply_text("❌ সঠিক পূর্ণসংখ্যা দিন।")
+                await update.message.reply_text("âŒ à¦¸à¦ à¦¿à¦• à¦ªà§‚à¦°à§à¦£à¦¸à¦‚à¦–à§à¦¯à¦¾ à¦¦à¦¿à¦¨à¥¤")
             return
         elif setting_type == "set_cooldown":
             try:
                 num = int(val)
                 await set_setting("cooldown_timer", num)
-                await update.message.reply_text(f"✅ Cooldown timer updated to: `{num}s`")
+                await update.message.reply_text(f"âœ… Cooldown timer updated to: `{num}s`")
             except ValueError:
-                await update.message.reply_text("❌ সঠিক সংখ্যা দিন।")
+                await update.message.reply_text("âŒ à¦¸à¦ à¦¿à¦• à¦¸à¦‚à¦–à§à¦¯à¦¾ à¦¦à¦¿à¦¨à¥¤")
             return
         elif setting_type == "add_pay_method":
             methods = await get_setting("payment_methods", ["Bkash", "Nagad", "Binance"])
             if val not in methods:
                 methods.append(val)
                 await set_setting("payment_methods", methods)
-            await update.message.reply_text(f"✅ Payment method `{val}` added successfully!")
+            await update.message.reply_text(f"âœ… Payment method `{val}` added successfully!")
             return
         elif setting_type == "rem_pay_method":
             methods = await get_setting("payment_methods", ["Bkash", "Nagad", "Binance"])
             if val in methods:
                 methods.remove(val)
                 await set_setting("payment_methods", methods)
-            await update.message.reply_text(f"✅ Payment method `{val}` removed successfully!")
+            await update.message.reply_text(f"âœ… Payment method `{val}` removed successfully!")
             return
 
     if await is_admin(user_id) and user_id in ADMIN_BROADCAST_STATE:
         del ADMIN_BROADCAST_STATE[user_id]
         broadcast_text = text.strip()
         
-        processing_msg = await update.message.reply_text("⏳ ব্রডকাস্ট মেসেজ পাঠানো হচ্ছে, দয়া করে অপেক্ষা করুন...")
+        processing_msg = await update.message.reply_text("â³ à¦¬à§à¦°à¦¡à¦•à¦¾à¦¸à§à¦Ÿ à¦®à§‡à¦¸à§‡à¦œ à¦ªà¦¾à¦ à¦¾à¦¨à§‹ à¦¹à¦šà§à¦›à§‡, à¦¦à§Ÿà¦¾ à¦•à¦°à§‡ à¦…à¦ªà§‡à¦•à§à¦·à¦¾ à¦•à¦°à§à¦¨...")
         
         all_users_cursor = users_col.find({})
         success_count = 0
@@ -1772,14 +2575,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await context.bot.send_message(
                     chat_id=u["user_id"],
-                    text=f"📢 **Announcement:**\n\n{broadcast_text}",
+                    text=f"ðŸ“¢ **Announcement:**\n\n{broadcast_text}",
                     parse_mode="Markdown"
                 )
                 success_count += 1
             except Exception:
                 pass
                 
-        await processing_msg.edit_text(f"✅ **ব্রডকাস্ট সফলভাবে সম্পন্ন হয়েছে!**\n📬 মোট ডেলিভারি হয়েছে: `{success_count}` জন ইউজারের কাছে।", parse_mode="Markdown")
+        await processing_msg.edit_text(f"âœ… **à¦¬à§à¦°à¦¡à¦•à¦¾à¦¸à§à¦Ÿ à¦¸à¦«à¦²à¦­à¦¾à¦¬à§‡ à¦¸à¦®à§à¦ªà¦¨à§à¦¨ à¦¹à§Ÿà§‡à¦›à§‡!**\nðŸ“¬ à¦®à§‹à¦Ÿ à¦¡à§‡à¦²à¦¿à¦­à¦¾à¦°à¦¿ à¦¹à§Ÿà§‡à¦›à§‡: `{success_count}` à¦œà¦¨ à¦‡à¦‰à¦œà¦¾à¦°à§‡à¦° à¦•à¦¾à¦›à§‡à¥¤", parse_mode="Markdown")
         return
 
     if user_id in USER_WITHDRAW_STATE:
@@ -1791,7 +2594,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state["step"] = "GET_AMOUNT"
             USER_WITHDRAW_STATE[user_id] = state
             await update.message.reply_text(
-                "💰 আপনি কত টাকা উইথড্র করতে চান সেই অ্যামাউন্ট লিখে পাঠান:",
+                "ðŸ’° à¦†à¦ªà¦¨à¦¿ à¦•à¦¤ à¦Ÿà¦¾à¦•à¦¾ à¦‰à¦‡à¦¥à¦¡à§à¦° à¦•à¦°à¦¤à§‡ à¦šà¦¾à¦¨ à¦¸à§‡à¦‡ à¦…à§à¦¯à¦¾à¦®à¦¾à¦‰à¦¨à§à¦Ÿ à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨:",
                 parse_mode="Markdown",
                 reply_markup=back_keyboard()
             )
@@ -1805,13 +2608,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 min_wd = float(await get_setting("min_withdraw", 100.0))
                 
                 if amount <= 0:
-                    await update.message.reply_text("❌ অ্যামাউন্ট সঠিক নয়। আবার চেষ্টা করুন:", reply_markup=back_keyboard())
+                    await update.message.reply_text("âŒ à¦…à§à¦¯à¦¾à¦®à¦¾à¦‰à¦¨à§à¦Ÿ à¦¸à¦ à¦¿à¦• à¦¨à§Ÿà¥¤ à¦†à¦¬à¦¾à¦° à¦šà§‡à¦·à§à¦Ÿà¦¾ à¦•à¦°à§à¦¨:", reply_markup=back_keyboard())
                     return
                 if amount > balance:
-                    await update.message.reply_text(f"❌ আপনার পর্যাপ্ত ব্যালেন্স নেই! আপনার বর্তমান ব্যালেন্স: `{balance:.2f}৳`", parse_mode="Markdown", reply_markup=back_keyboard())
+                    await update.message.reply_text(f"âŒ à¦†à¦ªà¦¨à¦¾à¦° à¦ªà¦°à§à¦¯à¦¾à¦ªà§à¦¤ à¦¬à§à¦¯à¦¾à¦²à§‡à¦¨à§à¦¸ à¦¨à§‡à¦‡! à¦†à¦ªà¦¨à¦¾à¦° à¦¬à¦°à§à¦¤à¦®à¦¾à¦¨ à¦¬à§à¦¯à¦¾à¦²à§‡à¦¨à§à¦¸: `{balance:.2f}à§³`", parse_mode="Markdown", reply_markup=back_keyboard())
                     return
                 if amount < min_wd:
-                    await update.message.reply_text(f"❌ সর্বনিম্ন `{min_wd}৳` উইথড্র করতে হবে। সঠিক অ্যামাউন্ট দিন:", reply_markup=back_keyboard())
+                    await update.message.reply_text(f"âŒ à¦¸à¦°à§à¦¬à¦¨à¦¿à¦®à§à¦¨ `{min_wd}à§³` à¦‰à¦‡à¦¥à¦¡à§à¦° à¦•à¦°à¦¤à§‡ à¦¹à¦¬à§‡à¥¤ à¦¸à¦ à¦¿à¦• à¦…à§à¦¯à¦¾à¦®à¦¾à¦‰à¦¨à§à¦Ÿ à¦¦à¦¿à¦¨:", reply_markup=back_keyboard())
                     return
                 
                 state["amount"] = amount
@@ -1820,22 +2623,22 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 confirm_keyboard = InlineKeyboardMarkup([
                     [
-                        InlineKeyboardButton("✅ Confirm", callback_data="wd_user_conf:yes"),
-                        InlineKeyboardButton("❌ Cancel", callback_data="wd_user_conf:no")
+                        InlineKeyboardButton("âœ… Confirm", callback_data="wd_user_conf:yes"),
+                        InlineKeyboardButton("âŒ Cancel", callback_data="wd_user_conf:no")
                     ]
                 ])
                 await update.message.reply_text(
-                    f"📋 **Withdrawal Summary**\n\n"
-                    f"💳 Method: `{method}`\n"
-                    f"📥 Account: `{account}`\n"
-                    f"💵 Amount: `{amount:.2f}৳`\n\n"
-                    f"দয়া করে তথ্যগুলো যাচাই করুন এবং কনফার্ম করুন:",
+                    f"ðŸ“‹ **Withdrawal Summary**\n\n"
+                    f"ðŸ’³ Method: `{method}`\n"
+                    f"ðŸ“¥ Account: `{account}`\n"
+                    f"ðŸ’µ Amount: `{amount:.2f}à§³`\n\n"
+                    f"à¦¦à§Ÿà¦¾ à¦•à¦°à§‡ à¦¤à¦¥à§à¦¯à¦—à§à¦²à§‹ à¦¯à¦¾à¦šà¦¾à¦‡ à¦•à¦°à§à¦¨ à¦à¦¬à¦‚ à¦•à¦¨à¦«à¦¾à¦°à§à¦® à¦•à¦°à§à¦¨:",
                     parse_mode="Markdown",
                     reply_markup=confirm_keyboard
                 )
                 return
             except ValueError:
-                await update.message.reply_text("❌ দয়া করে সঠিক সংখ্যা লিখুন:", reply_markup=back_keyboard())
+                await update.message.reply_text("âŒ à¦¦à§Ÿà¦¾ à¦•à¦°à§‡ à¦¸à¦ à¦¿à¦• à¦¸à¦‚à¦–à§à¦¯à¦¾ à¦²à¦¿à¦–à§à¦¨:", reply_markup=back_keyboard())
                 return
 
     if user_id in USER_SEARCH_STATE:
@@ -1844,7 +2647,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if not prefix:
             reply_markup = await build_main_menu(user_id)
-            await update.message.reply_text("❌ কান্ট্রি কোড বা সিরিয়াল খালি রাখা যাবে না।", reply_markup=reply_markup)
+            await update.message.reply_text("âŒ à¦•à¦¾à¦¨à§à¦Ÿà§à¦°à¦¿ à¦•à§‹à¦¡ à¦¬à¦¾ à¦¸à¦¿à¦°à¦¿à§Ÿà¦¾à¦² à¦–à¦¾à¦²à¦¿ à¦°à¦¾à¦–à¦¾ à¦¯à¦¾à¦¬à§‡ à¦¨à¦¾à¥¤", reply_markup=reply_markup)
             return
             
         num_req = int(await get_setting("num_request_count", 2))
@@ -1866,22 +2669,22 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "country": "Custom"
                 })
             
-            text_msg = f"🔎 **SEARCH RESULTS** (Prefix: `{prefix}`)"
+            text_msg = f"ðŸ”Ž **SEARCH RESULTS** (Prefix: `{prefix}`)"
             keyboard = []
             for doc in numbers:
                 num = doc['phone_number']
-                keyboard.append([InlineKeyboardButton(f"📲 📋 {num}", copy_text=CopyTextButton(text=num))])
+                keyboard.append([InlineKeyboardButton(f"ðŸ“² ðŸ“‹ {num}", copy_text=CopyTextButton(text=num))])
             
-            keyboard.append([InlineKeyboardButton("🔄 Change Number", callback_data=f"search_next:{prefix}")])
+            keyboard.append([InlineKeyboardButton("ðŸ”„ Change Number", callback_data=f"search_next:{prefix}")])
             keyboard.append([
-                InlineKeyboardButton("🌍 Other Countries", callback_data="get_number_menu"),
-                InlineKeyboardButton("🌐 OTP Group", url=OTP_GROUP_URL)
+                InlineKeyboardButton("ðŸŒ Other Countries", callback_data="get_number_menu"),
+                InlineKeyboardButton("ðŸŒ OTP Group", url=OTP_GROUP_URL)
             ])
             await update.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
         else:
             reply_markup = await build_main_menu(user_id)
             await update.message.reply_text(
-                f"❌ এই সিরিয়াল বা প্রফিক্স (`{prefix}`) দিয়ে কোনো নাম্বার খুঁজে পাওয়া যাচ্ছে না!",
+                f"âŒ à¦à¦‡ à¦¸à¦¿à¦°à¦¿à§Ÿà¦¾à¦² à¦¬à¦¾ à¦ªà§à¦°à¦«à¦¿à¦•à§à¦¸ (`{prefix}`) à¦¦à¦¿à§Ÿà§‡ à¦•à§‹à¦¨à§‹ à¦¨à¦¾à¦®à§à¦¬à¦¾à¦° à¦–à§à¦à¦œà§‡ à¦ªà¦¾à¦“à§Ÿà¦¾ à¦¯à¦¾à¦šà§à¦›à§‡ à¦¨à¦¾!",
                 parse_mode="Markdown",
                 reply_markup=reply_markup
             )
@@ -1894,14 +2697,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if current_step == "GET_SERVICE":
             service_name = text.strip()
             ADMIN_UPLOAD_STATE[user_id] = {"step": "GET_COUNTRY", "service": service_name}
-            await update.message.reply_text(f"✅ সার্ভিস: `{service_name}`\n\n🌍 এখন কান্ট্রির নাম লিখে পাঠান:", parse_mode="Markdown", reply_markup=back_keyboard())
+            await update.message.reply_text(f"âœ… à¦¸à¦¾à¦°à§à¦­à¦¿à¦¸: `{service_name}`\n\nðŸŒ à¦à¦–à¦¨ à¦•à¦¾à¦¨à§à¦Ÿà§à¦°à¦¿à¦° à¦¨à¦¾à¦® à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨:", parse_mode="Markdown", reply_markup=back_keyboard())
             return
 
         elif current_step == "GET_COUNTRY":
             country = text.strip()
             service_name = state_data["service"]
             ADMIN_UPLOAD_STATE[user_id] = {"step": "GET_NUMBERS", "service": service_name, "country": country}
-            await update.message.reply_text(f"✅ সার্ভিস: `{service_name}` | কান্ট্রি: `{country}`\n\n📂 এখন নাম্বার ফাইল (`.txt`) সেন্ড করুন অথবা নাম্বারগুলো পেস্ট করে দিন:", parse_mode="Markdown", reply_markup=back_keyboard())
+            await update.message.reply_text(f"âœ… à¦¸à¦¾à¦°à§à¦­à¦¿à¦¸: `{service_name}` | à¦•à¦¾à¦¨à§à¦Ÿà§à¦°à¦¿: `{country}`\n\nðŸ“‚ à¦à¦–à¦¨ à¦¨à¦¾à¦®à§à¦¬à¦¾à¦° à¦«à¦¾à¦‡à¦² (`.txt`) à¦¸à§‡à¦¨à§à¦¡ à¦•à¦°à§à¦¨ à¦…à¦¥à¦¬à¦¾ à¦¨à¦¾à¦®à§à¦¬à¦¾à¦°à¦—à§à¦²à§‹ à¦ªà§‡à¦¸à§à¦Ÿ à¦•à¦°à§‡ à¦¦à¦¿à¦¨:", parse_mode="Markdown", reply_markup=back_keyboard())
             return
 
         elif current_step == "GET_NUMBERS" and text:
@@ -1914,7 +2717,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await numbers_col.insert_many(docs)
                 await traffic_col.update_one(
                     {"country": country, "service": service_name},
-                    {"$setOnInsert": {"status": "MEDIUM", "icon": "🟡"}},
+                    {"$setOnInsert": {"status": "MEDIUM", "icon": "ðŸŸ¡"}},
                     upsert=True
                 )
             del ADMIN_UPLOAD_STATE[user_id]
@@ -1922,14 +2725,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             asyncio.create_task(broadcast_new_numbers_alert(context, service_name, len(numbers_list)))
             
             success_text = (
-                f"🎉 **সফলভাবে নাম্বার আপলোড সম্পন্ন হয়েছে!**\n\n"
-                f"💬 সার্ভিস নাম: `{service_name}`\n"
-                f"🌍 কান্ট্রি নাম: `{country}`\n"
-                f"📱 মোট নাম্বার: `{len(numbers_list)} টি`\n\n"
-                f"✅ এখন ইউজাররা গেট নাম্বার থেকে কাজ করতে পারবে।"
+                f"ðŸŽ‰ **à¦¸à¦«à¦²à¦­à¦¾à¦¬à§‡ à¦¨à¦¾à¦®à§à¦¬à¦¾à¦° à¦†à¦ªà¦²à§‹à¦¡ à¦¸à¦®à§à¦ªà¦¨à§à¦¨ à¦¹à§Ÿà§‡à¦›à§‡!**\n\n"
+                f"ðŸ’¬ à¦¸à¦¾à¦°à§à¦­à¦¿à¦¸ à¦¨à¦¾à¦®: `{service_name}`\n"
+                f"ðŸŒ à¦•à¦¾à¦¨à§à¦Ÿà§à¦°à¦¿ à¦¨à¦¾à¦®: `{country}`\n"
+                f"ðŸ“± à¦®à§‹à¦Ÿ à¦¨à¦¾à¦®à§à¦¬à¦¾à¦°: `{len(numbers_list)} à¦Ÿà¦¿`\n\n"
+                f"âœ… à¦à¦–à¦¨ à¦‡à¦‰à¦œà¦¾à¦°à¦°à¦¾ à¦—à§‡à¦Ÿ à¦¨à¦¾à¦®à§à¦¬à¦¾à¦° à¦¥à§‡à¦•à§‡ à¦•à¦¾à¦œ à¦•à¦°à¦¤à§‡ à¦ªà¦¾à¦°à¦¬à§‡à¥¤"
             )
             success_keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🚀 Get Number", callback_data=f"sel_serv:{service_name}")]
+                [InlineKeyboardButton("ðŸš€ Get Number", callback_data=f"sel_serv:{service_name}")]
             ])
             await update.message.reply_text(success_text, parse_mode="Markdown", reply_markup=success_keyboard)
             return
@@ -1955,7 +2758,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await numbers_col.insert_many(docs)
                 await traffic_col.update_one(
                     {"country": country, "service": service_name},
-                    {"$setOnInsert": {"status": "MEDIUM", "icon": "🟡"}},
+                    {"$setOnInsert": {"status": "MEDIUM", "icon": "ðŸŸ¡"}},
                     upsert=True
                 )
             del ADMIN_UPLOAD_STATE[user_id]
@@ -1963,50 +2766,61 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             asyncio.create_task(broadcast_new_numbers_alert(context, service_name, len(numbers_list)))
             
             success_text = (
-                f"🎉 **ফাইল থেকে সফলভাবে নাম্বার আপলোড সম্পন্ন হয়েছে!**\n\n"
-                f"💬 সার্ভিস নাম: `{service_name}`\n"
-                f"🌍 কান্ট্রি নাম: `{country}`\n"
-                f"📱 মোট নাম্বার: `{len(numbers_list)} টি`\n\n"
-                f"✅ এখন ইউজাররা গেট নাম্বার থেকে কাজ করতে পারবে।"
+                f"ðŸŽ‰ **à¦«à¦¾à¦‡à¦² à¦¥à§‡à¦•à§‡ à¦¸à¦«à¦²à¦­à¦¾à¦¬à§‡ à¦¨à¦¾à¦®à§à¦¬à¦¾à¦° à¦†à¦ªà¦²à§‹à¦¡ à¦¸à¦®à§à¦ªà¦¨à§à¦¨ à¦¹à§Ÿà§‡à¦›à§‡!**\n\n"
+                f"ðŸ’¬ à¦¸à¦¾à¦°à§à¦­à¦¿à¦¸ à¦¨à¦¾à¦®: `{service_name}`\n"
+                f"ðŸŒ à¦•à¦¾à¦¨à§à¦Ÿà§à¦°à¦¿ à¦¨à¦¾à¦®: `{country}`\n"
+                f"ðŸ“± à¦®à§‹à¦Ÿ à¦¨à¦¾à¦®à§à¦¬à¦¾à¦°: `{len(numbers_list)} à¦Ÿà¦¿`\n\n"
+                f"âœ… à¦à¦–à¦¨ à¦‡à¦‰à¦œà¦¾à¦°à¦°à¦¾ à¦—à§‡à¦Ÿ à¦¨à¦¾à¦®à§à¦¬à¦¾à¦° à¦¥à§‡à¦•à§‡ à¦•à¦¾à¦œ à¦•à¦°à¦¤à§‡ à¦ªà¦¾à¦°à¦¬à§‡à¥¤"
             )
             success_keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🚀 Get Number", callback_data=f"sel_serv:{service_name}")]
+                [InlineKeyboardButton("ðŸš€ Get Number", callback_data=f"sel_serv:{service_name}")]
             ])
             await update.message.reply_text(success_text, parse_mode="Markdown", reply_markup=success_keyboard)
             return
 
-    btn_get_num = await get_setting("btn_get_number", "📱 GET NUMBER")
-    btn_search_num = await get_setting("btn_search_number", "🔎 SEARCH NUMBER")
-    btn_traffic = await get_setting("btn_traffic", "🚦 TRAFFIC")
-    btn_refer = await get_setting("btn_refer", "👥 REFERRAL")
-    btn_balance = await get_setting("btn_balance", "💰 BALANCE")
-    btn_support = await get_setting("btn_support", "🆘 SUPPORT")
+    btn_get_num = await get_setting("btn_get_number", "ðŸ“± GET NUMBER")
+    btn_search_num = await get_setting("btn_search_number", "ðŸ”Ž SEARCH NUMBER")
+    btn_traffic = await get_setting("btn_traffic", "ðŸš¦ TRAFFIC")
+    btn_refer = await get_setting("btn_refer", "ðŸ‘¥ REFERRAL")
+    btn_balance = await get_setting("btn_balance", "ðŸ’° BALANCE")
+    btn_support = await get_setting("btn_support", "ðŸ†˜ SUPPORT")
 
     if text == "/start":
         await start(update, context)
         
     elif text == btn_get_num:
+        provider_service_docs = []
+        for provider in PROVIDERS:
+            svcs = await provider_services_col.find({"provider": provider}).sort("name", 1).to_list(length=200)
+            provider_service_docs.extend([(provider, svc) for svc in svcs])
         services = await numbers_col.distinct("service_name", {"status": "Available"})
-        if services:
-            keyboard = [[InlineKeyboardButton(f"📱 {s}", callback_data=f"sel_serv:{s}")] for s in services]
-            keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_main_menu")])
-            await update.message.reply_text("📱 **Select a Service:**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+        keyboard = []
+        for provider, svc in provider_service_docs:
+            keyboard.append([InlineKeyboardButton(
+                f"{svc.get('emoji', service_emoji(svc['name']))} {svc['name']} â€¢ {provider_label(provider)}",
+                callback_data=f"psel_serv:{provider}:{svc['service_id']}"
+            )])
+        for s in services:
+            keyboard.append([InlineKeyboardButton(f"ðŸ“± {s}", callback_data=f"sel_serv:{s}")])
+        if keyboard:
+            keyboard.append([InlineKeyboardButton("ðŸ”™ Back to Menu", callback_data="back_to_main_menu")])
+            await update.message.reply_text("ðŸ“± **Select a Service:**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
         else:
-            await update.message.reply_text("⚠️ বর্তমানে কোনো নাম্বার স্টক এ নেই!", parse_mode="Markdown")
+            await update.message.reply_text("âš ï¸ No services are configured.", parse_mode="Markdown")
         
     elif text == btn_search_num:
         USER_SEARCH_STATE[user_id] = True
-        await update.message.reply_text("🔎 **Search Number**\n\nদয়া করে কান্ট্রি কোড বা সিরিয়াল নাম্বার লিখে পাঠান (যেমন: `223`):", parse_mode="Markdown", reply_markup=back_keyboard())
+        await update.message.reply_text("ðŸ”Ž **Search Number**\n\nà¦¦à§Ÿà¦¾ à¦•à¦°à§‡ à¦•à¦¾à¦¨à§à¦Ÿà§à¦°à¦¿ à¦•à§‹à¦¡ à¦¬à¦¾ à¦¸à¦¿à¦°à¦¿à§Ÿà¦¾à¦² à¦¨à¦¾à¦®à§à¦¬à¦¾à¦° à¦²à¦¿à¦–à§‡ à¦ªà¦¾à¦ à¦¾à¦¨ (à¦¯à§‡à¦®à¦¨: `223`):", parse_mode="Markdown", reply_markup=back_keyboard())
         
     elif text == btn_traffic:
         traffic_list = await traffic_col.find({}).to_list(length=100)
         if not traffic_list:
-            traffic_text = "📊 বর্তমানে কোনো লাইভ ট্রাফিক ডাটা নেই।"
+            traffic_text = "ðŸ“Š à¦¬à¦°à§à¦¤à¦®à¦¾à¦¨à§‡ à¦•à§‹à¦¨à§‹ à¦²à¦¾à¦‡à¦­ à¦Ÿà§à¦°à¦¾à¦«à¦¿à¦• à¦¡à¦¾à¦Ÿà¦¾ à¦¨à§‡à¦‡à¥¤"
         else:
-            traffic_text = "🚦 **1 HOUR LIVE TRAFFIC**\n\n"
+            traffic_text = "ðŸš¦ **1 HOUR LIVE TRAFFIC**\n\n"
             for item in traffic_list:
-                traffic_text += f"🌍 **{item['service']}**\n{item['country']} : {item['status']} {item['icon']}\n\n"
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data="refresh_traffic")]])
+                traffic_text += f"ðŸŒ **{item['service']}**\n{item['country']} : {item['status']} {item['icon']}\n\n"
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("ðŸ”„ Refresh", callback_data="refresh_traffic")]])
         await update.message.reply_text(traffic_text, parse_mode="Markdown", reply_markup=keyboard)
         
     elif text == btn_refer:
@@ -2014,11 +2828,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ref_link = f"https://t.me/{bot_username}?start={user_id}"
         ref_bonus = await get_setting("ref_bonus", 0.01)
         ref_text = (
-            f"👥 **Referral & Earn Program**\n\n"
-            f"আপনার বন্ধুদের আমাদের বটে ইনভাইট করুন এবং আকর্ষণীয় ক্যাশ বোনাস আর্ন করুন!\n\n"
-            f"🎁 **Per Referral Bonus:** `{ref_bonus}৳`\n\n"
-            f"🔗 **আপনার রেফাল লিংক:**\n`{ref_link}`\n\n"
-            f"💡 *লিংকটি কপি করে শেয়ার করুন এবং আপনার ব্যালেন্স বাড়ান!*"
+            f"ðŸ‘¥ **Referral & Earn Program**\n\n"
+            f"à¦†à¦ªà¦¨à¦¾à¦° à¦¬à¦¨à§à¦§à§à¦¦à§‡à¦° à¦†à¦®à¦¾à¦¦à§‡à¦° à¦¬à¦Ÿà§‡ à¦‡à¦¨à¦­à¦¾à¦‡à¦Ÿ à¦•à¦°à§à¦¨ à¦à¦¬à¦‚ à¦†à¦•à¦°à§à¦·à¦£à§€à§Ÿ à¦•à§à¦¯à¦¾à¦¶ à¦¬à§‹à¦¨à¦¾à¦¸ à¦†à¦°à§à¦¨ à¦•à¦°à§à¦¨!\n\n"
+            f"ðŸŽ **Per Referral Bonus:** `{ref_bonus}à§³`\n\n"
+            f"ðŸ”— **à¦†à¦ªà¦¨à¦¾à¦° à¦°à§‡à¦«à¦¾à¦² à¦²à¦¿à¦‚à¦•:**\n`{ref_link}`\n\n"
+            f"ðŸ’¡ *à¦²à¦¿à¦‚à¦•à¦Ÿà¦¿ à¦•à¦ªà¦¿ à¦•à¦°à§‡ à¦¶à§‡à§Ÿà¦¾à¦° à¦•à¦°à§à¦¨ à¦à¦¬à¦‚ à¦†à¦ªà¦¨à¦¾à¦° à¦¬à§à¦¯à¦¾à¦²à§‡à¦¨à§à¦¸ à¦¬à¦¾à§œà¦¾à¦¨!*"
         )
         reply_markup = await build_main_menu(user_id)
         await update.message.reply_text(ref_text, parse_mode="Markdown", reply_markup=reply_markup)
@@ -2030,30 +2844,30 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_otp_rate = await get_setting("otp_rate", 0.60)
         
         balance_text = (
-            f"👤 **User Account Dashboard**\n\n"
-            f"💰 Current Balance : `{balance:.2f}৳`\n"
-            f"📈 Total Earned : `{total_earned:.2f}৳`\n"
-            f"💸 Withdrawal Status : `Active`\n\n"
-            f"⚡ Earn per OTP: `{current_otp_rate}৳`"
+            f"ðŸ‘¤ **User Account Dashboard**\n\n"
+            f"ðŸ’° Current Balance : `{balance:.2f}à§³`\n"
+            f"ðŸ“ˆ Total Earned : `{total_earned:.2f}à§³`\n"
+            f"ðŸ’¸ Withdrawal Status : `Active`\n\n"
+            f"âš¡ Earn per OTP: `{current_otp_rate}à§³`"
         )
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💸 Withdraw Balance", callback_data="withdraw_menu")]
+            [InlineKeyboardButton("ðŸ’¸ Withdraw Balance", callback_data="withdraw_menu")]
         ])
         await update.message.reply_text(balance_text, parse_mode="Markdown", reply_markup=keyboard)
         
     elif text == btn_support:
         support_text = (
-            f"🆘 **SUPPORT & HELP DESK**\n\n"
-            f"যেকোনো প্রয়োজনে সরাসরি আমাদের অফিসিয়াল অ্যাডমিনের সাথে যোগাযোগ করুন অথবা চ্যানেল ও গ্রুপে যুক্ত থাকুন。\n\n"
-            f"👑 **Admin Support:** [Click Here to Message]({SUPPORT_URL})"
+            f"ðŸ†˜ **SUPPORT & HELP DESK**\n\n"
+            f"à¦¯à§‡à¦•à§‹à¦¨à§‹ à¦ªà§à¦°à§Ÿà§‹à¦œà¦¨à§‡ à¦¸à¦°à¦¾à¦¸à¦°à¦¿ à¦†à¦®à¦¾à¦¦à§‡à¦° à¦…à¦«à¦¿à¦¸à¦¿à§Ÿà¦¾à¦² à¦…à§à¦¯à¦¾à¦¡à¦®à¦¿à¦¨à§‡à¦° à¦¸à¦¾à¦¥à§‡ à¦¯à§‹à¦—à¦¾à¦¯à§‹à¦— à¦•à¦°à§à¦¨ à¦…à¦¥à¦¬à¦¾ à¦šà§à¦¯à¦¾à¦¨à§‡à¦² à¦“ à¦—à§à¦°à§à¦ªà§‡ à¦¯à§à¦•à§à¦¤ à¦¥à¦¾à¦•à§à¦¨ã€‚\n\n"
+            f"ðŸ‘‘ **Admin Support:** [Click Here to Message]({SUPPORT_URL})"
         )
         keyboard = [
-            [InlineKeyboardButton("📢 Main Channel", url=MAIN_CHANNEL_URL), InlineKeyboardButton("📢 Update Channel", url=UPDATE_CHANNEL_URL)],
-            [InlineKeyboardButton("💬 OTP Group", url=OTP_GROUP_URL)]
+            [InlineKeyboardButton("ðŸ“¢ Main Channel", url=MAIN_CHANNEL_URL), InlineKeyboardButton("ðŸ“¢ Update Channel", url=UPDATE_CHANNEL_URL)],
+            [InlineKeyboardButton("ðŸ’¬ OTP Group", url=OTP_GROUP_URL)]
         ]
         await update.message.reply_text(support_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
         
-    elif text == "👑 ADMIN PANEL" and await is_admin(user_id):
+    elif text == "ðŸ‘‘ ADMIN PANEL" and await is_admin(user_id):
         text_msg, markup = await get_admin_panel_markup(user_id)
         await update.message.reply_text(text_msg, parse_mode="Markdown", reply_markup=markup)
         
@@ -2062,14 +2876,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         elif not update.message.document and not any(user_id in d for d in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_STATE]):
             reply_markup = await build_main_menu(user_id)
-            await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন।", reply_markup=reply_markup)
+            await update.message.reply_text("à¦¦à§Ÿà¦¾ à¦•à¦°à§‡ à¦¨à¦¿à¦šà§‡à¦° à¦¬à¦¾à¦Ÿà¦¨à¦—à§à¦²à§‹ à¦¬à§à¦¯à¦¬à¦¹à¦¾à¦° à¦•à¦°à§à¦¨ à¦…à¦¥à¦¬à¦¾ /start à¦¦à¦¿à¦¨à¥¤", reply_markup=reply_markup)
 
 async def broadcast_new_numbers_alert(context: ContextTypes.DEFAULT_TYPE, service_name: str, count: int):
     alert_text = (
-        f"🚨 **New Numbers Added!** 🚨\n\n"
-        f"📱 **Service:** `{service_name}`\n"
-        f"📦 **Quantity:** `{count} Pcs` Added Successfully!\n\n"
-        f"⚡ দ্রুত **GET NUMBER** এ গিয়ে নাম্বার নিয়ে নিন!"
+        f"ðŸš¨ **New Numbers Added!** ðŸš¨\n\n"
+        f"ðŸ“± **Service:** `{service_name}`\n"
+        f"ðŸ“¦ **Quantity:** `{count} Pcs` Added Successfully!\n\n"
+        f"âš¡ à¦¦à§à¦°à§à¦¤ **GET NUMBER** à¦ à¦—à¦¿à§Ÿà§‡ à¦¨à¦¾à¦®à§à¦¬à¦¾à¦° à¦¨à¦¿à§Ÿà§‡ à¦¨à¦¿à¦¨!"
     )
     all_users = users_col.find({})
     async for u in all_users:
@@ -2092,15 +2906,14 @@ async def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     application.add_handler(MessageHandler(filters.Document.ALL, message_handler))
     
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, otp_group_listener))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.SUPERGROUP, otp_group_listener))
-
-    print("Zentrix Bot with RanaX Auto-Forwarder and Menu Customizer is running successfully...")
+    # OTP delivery is webhook/API driven and never reads arbitrary group messages.
+    print("Zentrix Bot with authorized multi-provider management is starting...")
     
     async def main_runner():
         await application.initialize()
         await application.start()
         await application.updater.start_polling()
+        start_provider_webhook_server(application.bot)
         stop_signal = asyncio.Event()
         await stop_signal.wait()
 
@@ -2108,6 +2921,8 @@ async def main():
         await main_runner()
     except (KeyboardInterrupt, RuntimeError):
         pass
+    finally:
+        stop_provider_webhook_server()
 
 if __name__ == "__main__":
     asyncio.run(main())
