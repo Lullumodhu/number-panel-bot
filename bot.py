@@ -2,25 +2,11 @@ import os
 import logging
 import asyncio
 import re
-import json
-import base64
-import hashlib
-import random
-import threading
-import urllib.request
-import urllib.error
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from datetime import datetime, timezone
-from uuid import uuid4
+from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, CopyTextButton
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 import motor.motor_asyncio
-
-try:
-    from cryptography.fernet import Fernet, InvalidToken
-except ImportError:
-    Fernet = None
-    InvalidToken = Exception
+from bson.objectid import ObjectId
 
 # Optional country detection. If unavailable, a calling-code fallback is used.
 try:
@@ -51,14 +37,13 @@ channels_col = db.channels
 forward_groups_col = db.forward_groups
 ranax_groups_col = db.ranax_groups
 
-# --- Dynamic Authorized Provider System ---
+# --- Provider Control Hub (safe configuration/inventory management) ---
 provider_keys_col = db.provider_keys
 provider_services_col = db.provider_services
 provider_countries_col = db.provider_countries
 provider_ranges_col = db.provider_ranges
-provider_orders_col = db.provider_orders
-otp_events_col = db.otp_events
-provider_settings_col = db.provider_settings
+PROVIDERS = ["StexSMS", "Voltx", "Zenex", "YE SMS"]
+PROVIDER_STATE = {}
 
 # --- Permanent Links & Info ---
 MAIN_CHANNEL_URL = "https://t.me/Zentrix_Officiall"
@@ -82,9 +67,6 @@ USER_MANAGE_STATE = {}
 RANAX_ADD_STATE = {}
 MENU_EDIT_STATE = {}
 TEST_STATE = {}
-PROVIDER_STATE = {}
-EVENT_LOOP = None
-WEBHOOK_SERVER = None
 
 # --- Dynamic Settings Getter/Setter ---
 async def get_setting(key, default_val):
@@ -299,664 +281,107 @@ async def send_test_otp_to_configured_groups(context: ContextTypes.DEFAULT_TYPE,
     return success, failed, len(target_ids)
 
 
-# ================================================================
-# AUTHORIZED MULTI-PROVIDER MANAGEMENT
-# ================================================================
-PROVIDERS = {
-    # Providers whose documented get-number endpoint expects only {"range": "..."}.
-    "stex": {
-        "label": "StexSMS", "env": "STEXSMS", "base_url_required": True,
-        "default_get_path": "/api/getnum", "request_body_mode": "range_only",
-        "default_otp_path": "/api/success-otp-info",
-    },
-    # Voltx keeps the existing API-key-only behavior and payload format.
-    "voltx": {
-        "label": "Voltx", "env": "VOLTX", "base_url_required": False,
-        "default_get_path": "/get-number", "request_body_mode": "full",
-        "default_otp_path": "",
-    },
-    "zenex": {
-        "label": "Zenex", "env": "ZENEX", "base_url_required": True,
-        "default_get_path": "/api/getnum", "request_body_mode": "range_only",
-        "default_otp_path": "/api/success-otp-info",
-    },
-    "yesms": {
-        "label": "YE SMS", "env": "YESMS", "base_url_required": True,
-        "default_get_path": "/api/getnum", "request_body_mode": "range_only",
-        "default_otp_path": "/api/success-otp-info",
-    },
-}
-
-
+# --- Provider Control Helpers ---
 def provider_label(provider: str) -> str:
-    return PROVIDERS.get(provider, {}).get("label", provider.upper())
-
-
-def provider_env_prefix(provider: str) -> str:
-    return PROVIDERS.get(provider, {}).get("env", provider.upper())
-
-
-def normalize_name(value: str, max_len: int = 64) -> str:
-    value = re.sub(r"\s+", " ", (value or "").strip())
-    return value[:max_len]
-
-
-def normalize_service(value: str) -> str:
-    return normalize_name(value).upper()
-
-
-def normalize_country(value: str) -> str:
-    return normalize_name(value).title()
-
-
-def normalize_range(value: str) -> str:
-    value = re.sub(r"[^0-9+*#A-Za-z_-]", "", (value or "").strip())
-    return value[:32]
-
-
-def service_emoji(service: str) -> str:
-    s = (service or "").lower().replace(" ", "").replace("'", "")
-    icons = {
-        "facebook": "📘", "whatsapp": "💬", "telegram": "✈️",
-        "instagram": "📸", "google": "🔎", "youtube": "▶️",
-        "tiktok": "🎵", "twitter": "🐦", "x": "✖️", "discord": "🟣",
-        "imo": "💙", "snapchat": "👻", "microsoft": "🪟", "outlook": "📧",
-        "apple": "🍎", "uber": "🚕", "airbnb": "🏠", "linkedin": "💼",
-    }
-    return icons.get(s, "🔹")
-
-
-def country_code_from_name(name: str) -> str:
-    known = {
-        "guinea": "GN", "bangladesh": "BD", "india": "IN", "united states": "US",
-        "united kingdom": "GB", "malaysia": "MY", "indonesia": "ID", "singapore": "SG",
-        "thailand": "TH", "vietnam": "VN", "philippines": "PH", "pakistan": "PK",
-        "afghanistan": "AF", "sri lanka": "LK", "myanmar": "MM", "japan": "JP",
-        "south korea": "KR", "china": "CN", "russia": "RU", "turkey": "TR",
-        "france": "FR", "germany": "DE", "italy": "IT", "spain": "ES",
-        "netherlands": "NL", "belgium": "BE", "switzerland": "CH", "austria": "AT",
-        "denmark": "DK", "sweden": "SE", "norway": "NO", "poland": "PL",
-        "greece": "GR", "portugal": "PT", "ireland": "IE", "finland": "FI",
-        "ukraine": "UA", "czech republic": "CZ", "hungary": "HU", "romania": "RO",
-        "israel": "IL", "united arab emirates": "AE", "saudi arabia": "SA",
-        "qatar": "QA", "bahrain": "BH", "kuwait": "KW", "oman": "OM",
-        "yemen": "YE", "jordan": "JO", "lebanon": "LB", "syria": "SY",
-        "iraq": "IQ", "egypt": "EG", "morocco": "MA", "algeria": "DZ",
-        "tunisia": "TN", "libya": "LY", "nigeria": "NG", "kenya": "KE",
-        "tanzania": "TZ", "uganda": "UG", "south africa": "ZA", "australia": "AU",
-        "new zealand": "NZ",
-    }
-    return known.get((name or "").strip().lower(), "UN")
-
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def key_cipher():
-    if Fernet is None:
-        return None
-    secret = os.getenv("API_KEY_ENCRYPTION_SECRET") or BOT_TOKEN or MONGO_URI or "zentrix-default-secret"
-    digest = hashlib.sha256(secret.encode("utf-8")).digest()
-    return Fernet(base64.urlsafe_b64encode(digest))
-
-
-def encrypt_api_key(value: str) -> str:
-    cipher = key_cipher()
-    if cipher:
-        return "fernet:" + cipher.encrypt(value.encode()).decode()
-    return "plain:" + value
-
-
-def decrypt_api_key(value: str) -> str:
-    if not value:
-        return ""
-    if value.startswith("fernet:"):
-        cipher = key_cipher()
-        if not cipher:
-            return ""
-        try:
-            return cipher.decrypt(value[7:].encode()).decode()
-        except InvalidToken:
-            return ""
-    if value.startswith("plain:"):
-        return value[6:]
-    return value
-
-
-def mask_secret(value: str) -> str:
-    value = value or ""
-    if len(value) <= 8:
-        return "•" * len(value)
-    return value[:4] + "••••" + value[-4:]
-
-
-async def provider_key_count(provider: str) -> int:
-    return await provider_keys_col.count_documents({"provider": provider})
-
-
-async def provider_configured_services(provider: str):
-    return await provider_services_col.find({"provider": provider}).sort("name", 1).to_list(length=200)
-
-
-async def provider_api_config(provider: str) -> dict:
-    prefix = provider_env_prefix(provider)
-    meta = PROVIDERS.get(provider, {})
-    stored = await provider_settings_col.find_one({"provider": provider}) or {}
-    stored_base_url = str(stored.get("base_url") or "").strip().rstrip("/")
-    env_base_url = os.getenv(f"{prefix}_API_BASE_URL", "").strip().rstrip("/")
-    base_url = stored_base_url or env_base_url
-    get_path = str(stored.get("get_path") or os.getenv(
-        f"{prefix}_GET_NUMBER_PATH", meta.get("default_get_path", "/get-number")
-    )).strip()
-
-    stored_otp_url = str(stored.get("otp_api_url") or "").strip()
-    env_otp_url = os.getenv(f"{prefix}_OTP_API_URL", "").strip()
-    otp_api_url = stored_otp_url or env_otp_url
-    if not otp_api_url and base_url and meta.get("default_otp_path"):
-        otp_api_url = base_url + "/" + str(meta["default_otp_path"]).lstrip("/")
-
-    return {
-        "base_url": base_url,
-        "get_path": get_path,
-        "get_method": str(stored.get("get_method") or os.getenv(f"{prefix}_GET_NUMBER_METHOD", "POST")).upper(),
-        "request_body_mode": str(stored.get("request_body_mode") or meta.get("request_body_mode", "full")).lower(),
-        "validate_path": os.getenv(f"{prefix}_VALIDATE_KEY_PATH", ""),
-        "otp_api_url": otp_api_url,
-        "otp_method": str(stored.get("otp_method") or os.getenv(f"{prefix}_OTP_METHOD", "GET")).upper(),
-        "otp_poll_interval": max(2, int(stored.get("otp_poll_interval") or os.getenv("OTP_POLL_INTERVAL", "4"))),
-        "webhook_secret": os.getenv(f"{prefix}_WEBHOOK_SECRET", ""),
-        "auth_header": os.getenv(f"{prefix}_API_KEY_HEADER", "X-API-Key"),
-        "webhook_port": int(os.getenv("WEBHOOK_PORT", "8080")),
-        "base_url_required": bool(meta.get("base_url_required", True)),
-    }
-
-
-def provider_requires_base_url(provider: str) -> bool:
-    return bool(PROVIDERS.get(provider, {}).get("base_url_required", True))
-
-
-async def validate_provider_key(provider: str, api_key: str) -> bool:
-    """Validate only when a documented validation endpoint is configured.
-    Without one, a non-empty key is accepted and stored; this avoids inventing
-    undocumented provider API calls.
-    """
-    if not api_key or len(api_key) > 512:
-        return False
-    cfg = await provider_api_config(provider)
-    if not cfg["validate_path"] or not cfg["base_url"]:
-        return True
-    url = cfg["base_url"] + "/" + cfg["validate_path"].lstrip("/")
-    return await asyncio.to_thread(_provider_http_check, url, api_key, cfg["auth_header"])
-
-
-def _provider_http_check(url: str, api_key: str, auth_header: str) -> bool:
-    try:
-        req = urllib.request.Request(url, method="GET", headers={auth_header: api_key, "Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=15) as response:
-            return 200 <= response.status < 300
-    except Exception:
-        return False
-
-
-def _extract_first(data, keys):
-    if isinstance(data, dict):
-        for key in keys:
-            if key in data and data[key] not in (None, ""):
-                return data[key]
-        for value in data.values():
-            found = _extract_first(value, keys)
-            if found not in (None, ""):
-                return found
-    elif isinstance(data, list):
-        for value in data:
-            found = _extract_first(value, keys)
-            if found not in (None, ""):
-                return found
-    return None
-
-
-def _request_number_sync(url, method, payload, api_key, auth_header):
-    headers = {"Accept": "application/json", auth_header: api_key}
-    if auth_header.lower() != "authorization":
-        headers.setdefault("Authorization", f"Bearer {api_key}")
-    body = None
-    if method == "GET":
-        from urllib.parse import urlencode
-        url += ("&" if "?" in url else "?") + urlencode(payload)
-    else:
-        body = json.dumps(payload).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=body, method=method, headers=headers)
-    with urllib.request.urlopen(req, timeout=25) as response:
-        raw = response.read().decode("utf-8", errors="replace")
-        if not raw:
-            return {}
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return {"raw": raw}
-
-
-async def request_number_from_provider(provider: str, api_key: str, service: str, country: str, range_value: str):
-    cfg = await provider_api_config(provider)
-    if provider_requires_base_url(provider) and not cfg["base_url"]:
-        return None, None, "Provider API Base URL is not configured."
-
-    # A provider can be API-key-only (Voltx) or Base-URL + API-key.
-    if cfg["base_url"]:
-        path = cfg["get_path"].format(
-            service=service, country=country, range=range_value, provider=provider
-        )
-        url = cfg["base_url"] + "/" + path.lstrip("/")
-    else:
-        # For API-key-only providers the configured path may itself be a full URL.
-        url = cfg["get_path"]
-        if not re.match(r"^https?://", url):
-            return None, None, "Provider API endpoint is not configured."
-
-    if cfg["request_body_mode"] == "range_only":
-        # Zenex-style endpoint shown in the supplied API documentation:
-        # POST /api/getnum with exactly {"range": "26134XXX"}.
-        payload = {"range": range_value}
-    else:
-        payload = {"service": service, "country": country, "range": range_value}
-
-    try:
-        data = await asyncio.to_thread(
-            _request_number_sync, url, cfg["get_method"], payload, api_key, cfg["auth_header"]
-        )
-    except urllib.error.HTTPError as exc:
-        try:
-            body = exc.read().decode("utf-8", errors="replace")
-        except Exception:
-            body = ""
-        detail = f"HTTP {exc.code}" + (f": {body[:300]}" if body else "")
-        return None, None, detail
-    except Exception as exc:
-        return None, None, str(exc)
-
-    phone = _extract_first(data, [
-        "full_number", "phone_number", "phoneNumber", "phone",
-        "number", "mobile", "national_number", "no_plus_number"
-    ])
-    order_id = _extract_first(data, ["order_id", "orderId", "order", "id", "request_id", "requestId"])
-    if phone:
-        return str(phone), str(order_id or uuid4()), None
-
-    meta_code = _extract_first(data, ["code", "status_code"])
-    message = _extract_first(data, ["message", "error", "detail"])
-    detail = "Provider response did not contain a phone number."
-    if meta_code not in (None, ""):
-        detail += f" code={meta_code}"
-    if message not in (None, ""):
-        detail += f" | {message}"
-    return None, str(order_id or ""), detail
-
-
-async def create_provider_order(user_id: int, provider: str, key_doc: dict, service_doc: dict,
-                                country_doc: dict, range_doc: dict, phone: str, external_order_id: str):
-    order_id = str(external_order_id or uuid4())
-    doc = {
-        "order_id": order_id,
-        "provider": provider,
-        "api_key_id": key_doc.get("key_id"),
-        "service_id": service_doc.get("service_id"),
-        "service_name": service_doc.get("name"),
-        "country_id": country_doc.get("country_id"),
-        "country": country_doc.get("name"),
-        "country_code": country_doc.get("code", "UN"),
-        "range_id": range_doc.get("range_id"),
-        "range": range_doc.get("range"),
-        "phone_number": phone,
-        "user_id": user_id,
-        "status": "active",
-        "created_at": now_iso(),
-        "last_otp_event_id": None,
-    }
-    await provider_orders_col.update_one({"order_id": order_id}, {"$set": doc}, upsert=True)
-    return order_id
-
-
-async def provider_targets():
-    groups = await forward_groups_col.find({}).to_list(length=50)
-    ids = [str(g.get("group_id")).strip() for g in groups if g.get("group_id")]
-    fallback = os.getenv("OTP_GROUP_ID", "").strip()
-    return ids or ([fallback] if fallback else [])
-
-
-async def deliver_authorized_otp(bot, provider: str, event: dict):
-    """Deliver only provider-supplied events matched to an active order."""
-    event_id = str(event.get("event_id") or event.get("id") or uuid4())
-    phone = str(event.get("phone_number") or event.get("phone") or event.get("number") or "").strip()
-    external_order_id = str(event.get("order_id") or event.get("orderId") or "").strip()
-    otp = str(event.get("otp") or event.get("code") or "").strip()
-    sms_text = str(event.get("message") or event.get("sms") or event.get("text") or otp).strip()
-    if not otp and not sms_text:
-        return False, "missing_otp"
-
-    existing = await otp_events_col.find_one({"provider": provider, "event_id": event_id})
-    if existing:
-        return False, "duplicate"
-
-    query = {"provider": provider, "status": "active"}
-    if external_order_id:
-        query["order_id"] = external_order_id
-    elif phone:
-        query["phone_number"] = phone
-    else:
-        return False, "no_match_key"
-
-    order = await provider_orders_col.find_one(query)
-    if not order and phone and external_order_id:
-        order = await provider_orders_col.find_one({"provider": provider, "status": "active", "phone_number": phone})
-    if not order:
-        await otp_events_col.insert_one({"provider": provider, "event_id": event_id, "status": "unmatched", "created_at": now_iso()})
-        return False, "unmatched"
-
-    await otp_events_col.insert_one({
-        "provider": provider, "event_id": event_id, "order_id": order["order_id"],
-        "user_id": order["user_id"], "phone_number": order.get("phone_number"),
-        "created_at": now_iso(), "status": "processed",
-    })
-
-    await provider_orders_col.update_one(
-        {"_id": order["_id"]},
-        {"$set": {"status": "completed", "last_otp_event_id": event_id, "otp_received_at": now_iso()}}
-    )
-
-    service = order.get("service_name", "Unknown")
-    country = order.get("country", "Unknown")
-    country_code = order.get("country_code", "UN")
-    masked_phone = mask_test_phone(order.get("phone_number", phone))
-    provider_name = provider_label(provider)
-    otp_text = otp or sms_text
-    group_text = (
-        "🔔 **NEW OTP RECEIVED**\n\n"
-        f"📱 Service: `{service}`\n"
-        f"🌍 Country: {country_flag(country_code)} `{country}`\n"
-        f"📞 Number: `{masked_phone}`\n"
-        f"🔢 OTP: `{otp_text}`\n"
-        f"🆔 Order: `#{order['order_id']}`\n"
-        f"⚡ Provider: `{provider_name}`"
-    )
-    user_text = (
-        "🔔 **OTP RECEIVED**\n\n"
-        f"📱 Service: `{service}`\n"
-        f"🌍 Country: {country_flag(country_code)} `{country}`\n"
-        f"🔢 OTP: `{otp_text}`\n"
-        f"🆔 Order: `#{order['order_id']}`\n"
-        f"⚡ Provider: `{provider_name}`"
-    )
-
-    for target_id in await provider_targets():
-        try:
-            await bot.send_message(chat_id=target_id, text=group_text, parse_mode="Markdown")
-        except Exception:
-            pass
-    try:
-        await bot.send_message(chat_id=order["user_id"], text=user_text, parse_mode="Markdown")
-    except Exception:
-        pass
-    return True, "processed"
-
-
-async def provider_panel_markup(provider: str):
-    label = provider_label(provider)
-    keys = await provider_key_count(provider)
-    services = await provider_services_col.count_documents({"provider": provider})
-    countries = await provider_countries_col.count_documents({"provider": provider})
-    ranges = await provider_ranges_col.count_documents({"provider": provider})
-    cfg = await provider_api_config(provider)
-    base_status = "Configured" if cfg["base_url"] else "Not configured"
+    return f"⚡ {provider}"
+
+def provider_service_emoji(name: str) -> str:
+    n = (name or "").upper()
+    if "FACEBOOK" in n: return "📘"
+    if "WHATSAPP" in n: return "💬"
+    if "TELEGRAM" in n: return "✈️"
+    if "INSTAGRAM" in n: return "📸"
+    if "GOOGLE" in n or "GMAIL" in n: return "🔎"
+    if "YOUTUBE" in n: return "▶️"
+    if "TIKTOK" in n: return "🎵"
+    if "TWITTER" in n or n == "X": return "🐦"
+    return "🔹"
+
+def provider_country_flag(name: str) -> str:
+    n = (name or "").lower()
+    if "bangladesh" in n or n == "bd": return "🇧🇩"
+    if "india" in n or n == "in": return "🇮🇳"
+    if "usa" in n or "united states" in n or n == "us": return "🇺🇸"
+    if "pakistan" in n or n == "pk": return "🇵🇰"
+    if "indonesia" in n or n == "id": return "🇮🇩"
+    if "guinea" in n or n == "gn": return "🇬🇳"
+    return "🌍"
+
+def mask_provider_key(key: str) -> str:
+    if len(key) <= 8:
+        return "****"
+    return key[:4] + "••••" + key[-4:]
+
+async def provider_control_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, provider: str):
+    query = update.callback_query
+    keys_count = await provider_keys_col.count_documents({"provider": provider})
+    services_count = await provider_services_col.count_documents({"provider": provider})
+    countries_count = await provider_countries_col.count_documents({"provider": provider})
     text = (
-        f"⚡ **{label} Control Panel**\n\n"
-        f"🔑 Total API Keys: `{keys}`\n"
-        f"📁 Services: `{services}`  •  🌍 Countries: `{countries}`  •  📍 Ranges: `{ranges}`\n"
+        f"⚡ **{provider} Control Panel**\n\n"
+        f"• API Keys: `{keys_count}`\n"
+        f"• Services: `{services_count}`\n"
+        f"• Countries: `{countries_count}`\n\n"
+        f"Manage {provider} configuration below.\n"
+        f"ℹ️ API keys are stored for configuration only; this build does not collect or forward third-party verification OTPs."
     )
-    if provider_requires_base_url(provider):
-        text += f"🌐 Base URL: `{base_status}`\n"
-    else:
-        text += "🔗 Connection: `API Key only`\n"
-    otp_status = "Configured" if cfg.get("otp_api_url") else "Not configured"
-    text += f"📩 OTP API: `{otp_status}`\n\n"
-    text += f"Manage your {label} API keys, services, countries, ranges and OTP API below."
     keyboard = [
-        [InlineKeyboardButton(f"🟢 ➕ Add {label} Key", callback_data=f"p_add_key:{provider}")],
-        [InlineKeyboardButton("🔴 🗑 View / Delete Keys", callback_data=f"p_keys:{provider}")],
-        [InlineKeyboardButton(f"🟡 ⚙️ Manage {label} Services", callback_data=f"p_services:{provider}")],
+        [InlineKeyboardButton("➕ Add Key", callback_data=f"prov_add_key:{provider}"), InlineKeyboardButton("🗑️ View/Del Keys", callback_data=f"prov_keys:{provider}")],
+        [InlineKeyboardButton("⚙️ Manage Services", callback_data=f"prov_services:{provider}")],
+        [InlineKeyboardButton("🔙 Back to Hub", callback_data="adm_system_menu")]
     ]
-    if provider_requires_base_url(provider):
-        keyboard.append([InlineKeyboardButton("🔵 🌐 Set Base URL", callback_data=f"p_baseurl:{provider}")])
-    keyboard.append([InlineKeyboardButton("🟣 📩 Set OTP API", callback_data=f"p_otpapi:{provider}")])
-    keyboard.extend([
-        [InlineKeyboardButton("🔵 🔎 Search Country", callback_data=f"p_search:{provider}")],
-        [InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")],
-    ])
-    return text, InlineKeyboardMarkup(keyboard)
+    await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def provider_services_markup(provider: str):
-    services = await provider_configured_services(provider)
-    text = f"⚡ **{provider_label(provider)} Services Manager**\n\nManage your API-based dynamic services below:"
-    keyboard = []
+async def provider_services_menu(query, provider: str):
+    services = await provider_services_col.find({"provider": provider}).to_list(length=200)
+    text = f"⚙️ **{provider} Services Manager**\n\nManage services and their countries."
+    keyboard = [[InlineKeyboardButton("➕ Add New Service", callback_data=f"prov_add_svc:{provider}")]]
     for svc in services:
-        sid = svc["service_id"]
-        keyboard.append([InlineKeyboardButton(f"{svc.get('emoji', service_emoji(svc['name']))} {svc['name']}", callback_data=f"p_service:{provider}:{sid}")])
-    keyboard.append([InlineKeyboardButton("➕ Add New Service", callback_data=f"p_add_service:{provider}")])
-    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data=f"p_control:{provider}")])
-    return text, InlineKeyboardMarkup(keyboard)
+        emoji = svc.get("emoji", provider_service_emoji(svc.get("name", "")))
+        keyboard.append([InlineKeyboardButton(f"{emoji} {svc['name']}", callback_data=f"prov_svc_mgmt:{provider}:{svc['_id']}")])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data=f"prov_panel:{provider}")])
+    await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
-
-async def provider_service_screen(provider: str, service_id: str):
-    svc = await provider_services_col.find_one({"provider": provider, "service_id": service_id})
+async def provider_service_menu(query, provider: str, sid: str):
+    svc = await provider_services_col.find_one({"_id": ObjectId(sid)})
     if not svc:
-        return "❌ Service not found.", InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=f"p_services:{provider}")]])
-    countries = await provider_countries_col.find({"provider": provider, "service_id": service_id}).sort("name", 1).to_list(length=200)
-    text = f"📁 **Service: {svc['name']}**\n\nManage countries for this service:"
-    keyboard = []
-    for country in countries:
-        keyboard.append([InlineKeyboardButton(
-            f"{country.get('flag', country_flag(country.get('code', 'UN')))} {country['name']}",
-            callback_data=f"p_country:{provider}:{service_id}:{country['country_id']}"
-        )])
-    keyboard.append([InlineKeyboardButton("➕ Add Country", callback_data=f"p_add_country:{provider}:{service_id}")])
-    keyboard.append([InlineKeyboardButton("🗑 Delete Service", callback_data=f"p_del_service:{provider}:{service_id}")])
-    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data=f"p_services:{provider}")])
-    return text, InlineKeyboardMarkup(keyboard)
-
-
-async def provider_country_screen(provider: str, service_id: str, country_id: str):
-    svc = await provider_services_col.find_one({"provider": provider, "service_id": service_id})
-    country = await provider_countries_col.find_one({"provider": provider, "country_id": country_id})
-    if not svc or not country:
-        return "❌ Country configuration not found.", InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=f"p_services:{provider}")]])
-    ranges = await provider_ranges_col.find({"provider": provider, "service_id": service_id, "country_id": country_id}).sort("range", 1).to_list(length=500)
-    text = (
-        f"📍 **Service: {svc['name']} | Country: {country['name']}**\n\n"
-        f"Total Ranges: `{len(ranges)}`\n\n"
-        "Click on a range below to delete it, or add a new one."
-    )
-    keyboard = []
-    for r in ranges:
-        keyboard.append([InlineKeyboardButton(f"📍 {r['range']}", callback_data=f"p_del_range:{provider}:{r['range_id']}")])
-    keyboard.append([InlineKeyboardButton("➕ Add Range", callback_data=f"p_add_range:{provider}:{service_id}:{country_id}")])
-    keyboard.append([InlineKeyboardButton("🗑 Delete Entire Country", callback_data=f"p_del_country:{provider}:{service_id}:{country_id}")])
-    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data=f"p_service:{provider}:{service_id}")])
-    return text, InlineKeyboardMarkup(keyboard)
-
-
-def _normalize_otp_events(payload):
-    """Return a flat list from common success-OTP API response shapes."""
-    if isinstance(payload, list):
-        return payload
-    if not isinstance(payload, dict):
-        return []
-    data = payload.get("data")
-    if isinstance(data, dict):
-        otps = data.get("otps")
-        if isinstance(otps, list):
-            return otps
-        if isinstance(otps, dict):
-            return [otps]
-        if any(k in data for k in ("otp", "code", "number", "phone", "phone_number")):
-            return [data]
-    otps = payload.get("otps")
-    if isinstance(otps, list):
-        return otps
-    if isinstance(otps, dict):
-        return [otps]
-    if any(k in payload for k in ("otp", "code", "number", "phone", "phone_number")):
-        return [payload]
-    return []
-
-
-def _otp_event_fingerprint(provider: str, event: dict) -> str:
-    raw = "|".join(str(event.get(k, "")) for k in (
-        "id", "event_id", "number", "phone", "phone_number", "otp", "code", "sms", "message", "time"
-    ))
-    return hashlib.sha256(f"{provider}|{raw}".encode("utf-8")).hexdigest()
-
-
-def _poll_otp_api_sync(url: str, method: str, api_key: str, auth_header: str):
-    headers = {"Accept": "application/json", auth_header: api_key}
-    if auth_header.lower() != "authorization":
-        headers.setdefault("Authorization", f"Bearer {api_key}")
-    req = urllib.request.Request(url, method=method, headers=headers)
-    with urllib.request.urlopen(req, timeout=20) as response:
-        raw = response.read().decode("utf-8", errors="replace")
-        if not raw:
-            return {}
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return {"raw": raw}
-
-
-async def poll_provider_otp_apis(bot):
-    """Poll configured provider OTP APIs and forward only OTPs matching active orders."""
-    while True:
-        intervals = []
-        try:
-            for provider in PROVIDERS:
-                cfg = await provider_api_config(provider)
-                intervals.append(cfg.get("otp_poll_interval", 4))
-                otp_url = cfg.get("otp_api_url")
-                if not otp_url:
-                    continue
-                keys = await provider_keys_col.find({"provider": provider}).limit(1).to_list(length=1)
-                if not keys:
-                    continue
-                api_key = decrypt_api_key(keys[0].get("encrypted_key", ""))
-                if not api_key:
-                    continue
-                try:
-                    payload = await asyncio.to_thread(
-                        _poll_otp_api_sync, otp_url, cfg.get("otp_method", "GET"),
-                        api_key, cfg.get("auth_header", "X-API-Key")
-                    )
-                except Exception as exc:
-                    logging.warning("OTP API poll failed for %s: %s", provider, exc)
-                    continue
-
-                for event in _normalize_otp_events(payload):
-                    if not isinstance(event, dict):
-                        continue
-                    event = dict(event)
-                    if not event.get("event_id") and not event.get("id"):
-                        event["event_id"] = _otp_event_fingerprint(provider, event)
-                    await deliver_authorized_otp(bot, provider, event)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logging.exception("Provider OTP polling loop error")
-
-        sleep_for = min(intervals) if intervals else 4
-        await asyncio.sleep(max(2, sleep_for))
-
-
-class ProviderWebhookHandler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
+        await query.message.edit_text("❌ Service not found.")
         return
+    countries = await provider_countries_col.find({"provider": provider, "service_id": ObjectId(sid)}).to_list(length=200)
+    text = f"📁 **Service: {svc['name']}**\n\nManage countries for this service."
+    keyboard = [
+        [InlineKeyboardButton("➕ Add Country", callback_data=f"prov_add_country:{provider}:{sid}")],
+        [InlineKeyboardButton("🗑️ Delete Service", callback_data=f"prov_del_svc_conf:{provider}:{sid}")]
+    ]
+    for c in countries:
+        flag = c.get("flag", provider_country_flag(c.get("name", "")))
+        keyboard.append([InlineKeyboardButton(f"{flag} {c['name']}", callback_data=f"prov_country_mgmt:{provider}:{c['_id']}")])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data=f"prov_services:{provider}")])
+    await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    def do_POST(self):
-        global EVENT_LOOP
-        match = re.fullmatch(r"/webhook/(stex|voltx|zenex|yesms)", self.path.split("?", 1)[0])
-        if not match or EVENT_LOOP is None:
-            self.send_response(404)
-            self.end_headers()
-            return
-        provider = match.group(1)
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-            raw = self.rfile.read(length)
-            payload = json.loads(raw.decode("utf-8"))
-            secret = self.headers.get("X-Webhook-Secret", "")
-            expected = os.getenv(f"{provider_env_prefix(provider)}_WEBHOOK_SECRET", "")
-            body_secret = str(payload.get("secret", "")) if isinstance(payload, dict) else ""
-            if not expected:
-                self.send_response(503)
-                self.end_headers()
-                return
-            if secret != expected and body_secret != expected:
-                self.send_response(401)
-                self.end_headers()
-                return
-            if not isinstance(payload, dict):
-                raise ValueError("JSON object required")
-            future = asyncio.run_coroutine_threadsafe(_handle_webhook_payload(provider, payload), EVENT_LOOP)
-            future.result(timeout=20)
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"OK")
-        except Exception:
-            self.send_response(400)
-            self.end_headers()
-
-
-async def _handle_webhook_payload(provider: str, payload: dict):
-    # Some providers wrap the event in data/event/result.
-    event = payload.get("event") if isinstance(payload.get("event"), dict) else payload
-    if isinstance(event.get("data"), dict):
-        merged = dict(event)
-        merged.update(event["data"])
-        event = merged
-    bot = _WEBHOOK_BOT
-    if bot is not None:
-        await deliver_authorized_otp(bot, provider, event)
-
-
-_WEBHOOK_BOT = None
-
-
-def start_provider_webhook_server(bot):
-    global EVENT_LOOP, WEBHOOK_SERVER, _WEBHOOK_BOT
-    EVENT_LOOP = asyncio.get_running_loop()
-    _WEBHOOK_BOT = bot
-    port = int(os.getenv("WEBHOOK_PORT", "8080"))
-    try:
-        WEBHOOK_SERVER = ThreadingHTTPServer(("0.0.0.0", port), ProviderWebhookHandler)
-        thread = threading.Thread(target=WEBHOOK_SERVER.serve_forever, daemon=True)
-        thread.start()
-        logging.info("Authorized provider webhook server listening on port %s", port)
-    except Exception as exc:
-        logging.warning("Provider webhook server not started: %s", exc)
-
-
-def stop_provider_webhook_server():
-    global WEBHOOK_SERVER
-    if WEBHOOK_SERVER:
-        try:
-            WEBHOOK_SERVER.shutdown()
-            WEBHOOK_SERVER.server_close()
-        except Exception:
-            pass
-        WEBHOOK_SERVER = None
+async def provider_country_menu(query, provider: str, cid: str):
+    c_doc = await provider_countries_col.find_one({"_id": ObjectId(cid)})
+    if not c_doc:
+        await query.message.edit_text("❌ Country not found.")
+        return
+    sid = c_doc["service_id"]
+    svc_doc = await provider_services_col.find_one({"_id": sid})
+    ranges = await provider_ranges_col.find({"country_id": ObjectId(cid)}).to_list(length=500)
+    text = f"📍 **Service: {svc_doc['name'] if svc_doc else 'N/A'} | Country: {c_doc['name']}**\n\nTotal Ranges: `{len(ranges)}`"
+    keyboard = [
+        [InlineKeyboardButton("➕ Add Range", callback_data=f"prov_add_range:{provider}:{cid}")],
+        [InlineKeyboardButton("🗑️ Delete Entire Country", callback_data=f"prov_del_country_conf:{provider}:{cid}")]
+    ]
+    for r in ranges:
+        keyboard.append([InlineKeyboardButton(f"📍 {r['range_value']}", callback_data=f"prov_del_range:{provider}:{r['_id']}")])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data=f"prov_svc_mgmt:{provider}:{sid}")])
+    await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
-    for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_STATE, PROVIDER_STATE]:
+    for state_dict in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_STATE]:
         if user.id in state_dict:
             del state_dict[user.id]
 
@@ -1046,12 +471,142 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
 
-    # Any provider navigation cancels a pending provider text-input state.
-    # The specific add/search callbacks below create a fresh state again.
-    if query.data.startswith("p_") or query.data in {
-        "stex_control", "voltx_control", "zenex_control", "ye_control"
-    }:
-        PROVIDER_STATE.pop(user_id, None)
+    # --- Provider Control Hub ---
+    if query.data in {"stex_control", "voltx_control", "zenex_control", "ye_control"} and await is_admin(user_id):
+        await query.answer()
+        provider_map = {"stex_control": "StexSMS", "voltx_control": "Voltx", "zenex_control": "Zenex", "ye_control": "YE SMS"}
+        await provider_control_panel(update, context, provider_map[query.data])
+        return
+
+    if query.data.startswith("prov_panel:") and await is_admin(user_id):
+        await query.answer()
+        provider = query.data.split(":", 1)[1]
+        if provider in PROVIDERS:
+            await provider_control_panel(update, context, provider)
+        return
+
+    if query.data.startswith("prov_add_key:") and await is_admin(user_id):
+        await query.answer()
+        provider = query.data.split(":", 1)[1]
+        if provider not in PROVIDERS:
+            return
+        PROVIDER_STATE[user_id] = {"action": "add_key", "provider": provider}
+        await query.message.edit_text(
+            f"🔑 Send the new **{provider}** API key as your next text message.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"prov_panel:{provider}")]])
+        )
+        return
+
+    if query.data.startswith("prov_keys:") and await is_admin(user_id):
+        await query.answer()
+        provider = query.data.split(":", 1)[1]
+        keys = await provider_keys_col.find({"provider": provider}).to_list(length=100)
+        text = f"🗝️ **{provider} API Keys**\n\nTotal: `{len(keys)}`\n\n"
+        keyboard = []
+        for idx, doc in enumerate(keys, 1):
+            text += f"• Key #{idx}: `{mask_provider_key(doc.get('api_key', ''))}`\n"
+            keyboard.append([InlineKeyboardButton(f"🗑️ Delete Key #{idx}", callback_data=f"prov_del_key:{provider}:{doc['_id']}")])
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data=f"prov_panel:{provider}")])
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    if query.data.startswith("prov_del_key:") and await is_admin(user_id):
+        await query.answer()
+        _, provider, kid = query.data.split(":", 2)
+        await provider_keys_col.delete_one({"_id": ObjectId(kid)})
+        await query.message.edit_text("✅ API key deleted.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=f"prov_keys:{provider}")]]))
+        return
+
+    if query.data.startswith("prov_services:") and await is_admin(user_id):
+        await query.answer()
+        provider = query.data.split(":", 1)[1]
+        await provider_services_menu(query, provider)
+        return
+
+    if query.data.startswith("prov_add_svc:") and await is_admin(user_id):
+        await query.answer()
+        provider = query.data.split(":", 1)[1]
+        PROVIDER_STATE[user_id] = {"action": "add_service", "provider": provider}
+        await query.message.edit_text(
+            "📝 Enter the service name (e.g. TELEGRAM, FACEBOOK):",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"prov_services:{provider}")]])
+        )
+        return
+
+    if query.data.startswith("prov_svc_mgmt:") and await is_admin(user_id):
+        await query.answer()
+        _, provider, sid = query.data.split(":", 2)
+        await provider_service_menu(query, provider, sid)
+        return
+
+    if query.data.startswith("prov_del_svc_conf:") and await is_admin(user_id):
+        await query.answer()
+        _, provider, sid = query.data.split(":", 2)
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Confirm Delete", callback_data=f"prov_del_svc_exec:{provider}:{sid}"), InlineKeyboardButton("❌ Cancel", callback_data=f"prov_svc_mgmt:{provider}:{sid}")]])
+        await query.message.edit_text("⚠️ Delete this service and all of its countries/ranges?", reply_markup=keyboard)
+        return
+
+    if query.data.startswith("prov_del_svc_exec:") and await is_admin(user_id):
+        await query.answer()
+        _, provider, sid = query.data.split(":", 2)
+        await provider_services_col.delete_one({"_id": ObjectId(sid)})
+        await provider_countries_col.delete_many({"service_id": ObjectId(sid)})
+        await provider_ranges_col.delete_many({"service_id": ObjectId(sid)})
+        await query.message.edit_text("✅ Service deleted.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=f"prov_services:{provider}")]]))
+        return
+
+    if query.data.startswith("prov_add_country:") and await is_admin(user_id):
+        await query.answer()
+        _, provider, sid = query.data.split(":", 2)
+        PROVIDER_STATE[user_id] = {"action": "add_country", "provider": provider, "service_id": sid}
+        await query.message.edit_text("🌍 Enter country name (e.g. Bangladesh, India):", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"prov_svc_mgmt:{provider}:{sid}")]]))
+        return
+
+    if query.data.startswith("prov_country_mgmt:") and await is_admin(user_id):
+        await query.answer()
+        _, provider, cid = query.data.split(":", 2)
+        await provider_country_menu(query, provider, cid)
+        return
+
+    if query.data.startswith("prov_add_range:") and await is_admin(user_id):
+        await query.answer()
+        _, provider, cid = query.data.split(":", 2)
+        c_doc = await provider_countries_col.find_one({"_id": ObjectId(cid)})
+        PROVIDER_STATE[user_id] = {"action": "add_range", "provider": provider, "country_id": cid}
+        await query.message.edit_text(
+            f"📝 Send the range for {c_doc.get('name', 'Country') if c_doc else 'Country'} (e.g. 26134):",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"prov_country_mgmt:{provider}:{cid}")]])
+        )
+        return
+
+    if query.data.startswith("prov_del_range:") and await is_admin(user_id):
+        await query.answer()
+        _, provider, rid = query.data.split(":", 2)
+        r_doc = await provider_ranges_col.find_one({"_id": ObjectId(rid)})
+        cid = str(r_doc["country_id"]) if r_doc else ""
+        await provider_ranges_col.delete_one({"_id": ObjectId(rid)})
+        await query.message.edit_text("✅ Range deleted.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=f"prov_country_mgmt:{provider}:{cid}")]]))
+        return
+
+    if query.data.startswith("prov_del_country_conf:") and await is_admin(user_id):
+        await query.answer()
+        _, provider, cid = query.data.split(":", 2)
+        await query.message.edit_text(
+            "⚠️ Delete this country and all of its ranges?",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Confirm Delete", callback_data=f"prov_del_country_exec:{provider}:{cid}"), InlineKeyboardButton("❌ Cancel", callback_data=f"prov_country_mgmt:{provider}:{cid}")]])
+        )
+        return
+
+    if query.data.startswith("prov_del_country_exec:") and await is_admin(user_id):
+        await query.answer()
+        _, provider, cid = query.data.split(":", 2)
+        c_doc = await provider_countries_col.find_one({"_id": ObjectId(cid)})
+        sid = str(c_doc["service_id"]) if c_doc else ""
+        await provider_countries_col.delete_one({"_id": ObjectId(cid)})
+        await provider_ranges_col.delete_many({"country_id": ObjectId(cid)})
+        await query.message.edit_text("✅ Country deleted.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=f"prov_svc_mgmt:{provider}:{sid}")]]))
+        return
 
     if query.data == "check_join":
         is_joined = await check_force_join(user_id, context)
@@ -1082,15 +637,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- System Control Hub Menu ---
     elif query.data == "adm_system_menu" and await is_admin(user_id):
         await query.answer()
-        sys_text = (
-            "⚙️ **System Control Hub**\n\n"
-            "Manage each authorized SMS provider independently.\n"
-            "Provider keys, services, countries and ranges are kept separate."
-        )
+        sys_text = "⚙️ **System Control Hub**\n\nনিচের অপশনগুলো থেকে ম্যানেজ করুন:"
         sys_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⚡ StexSMS", callback_data="p_control:stex"), InlineKeyboardButton("💠 Voltx", callback_data="p_control:voltx")],
-            [InlineKeyboardButton("🔷 Zenex", callback_data="p_control:zenex"), InlineKeyboardButton("🟢 YE SMS", callback_data="p_control:yesms")],
-            [InlineKeyboardButton("🛡️ Provider OTP", callback_data="provider_otp_info"), InlineKeyboardButton("✨ Premium UI", callback_data="premium_emoji")],
+            [InlineKeyboardButton("StexSMS", callback_data="stex_control"), InlineKeyboardButton("Voltx", callback_data="voltx_control")],
+            [InlineKeyboardButton("Zenex", callback_data="zenex_control"), InlineKeyboardButton("YE SMS", callback_data="ye_control")],
+            [InlineKeyboardButton("RanaX", callback_data="ranax_control"), InlineKeyboardButton("Emoji", callback_data="premium_emoji")],
             [InlineKeyboardButton("Menu Design", callback_data="menu_design"), InlineKeyboardButton("Test", callback_data="test")],
             [InlineKeyboardButton("👑 Admin Mgmt", callback_data="adm_mgmt_menu"), InlineKeyboardButton("⚙️ Force Join", callback_data="adm_fj_menu")],
             [InlineKeyboardButton("👥 User Mgmt", callback_data="adm_usermgmt_menu"), InlineKeyboardButton("💬 OTP Groups", callback_data="adm_otpgroup_menu")],
@@ -1098,17 +649,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔙 Back", callback_data="adm_back")]
         ])
         await query.message.edit_text(sys_text, parse_mode="Markdown", reply_markup=sys_keyboard)
-
-    elif query.data == "premium_emoji" and await is_admin(user_id):
-        await query.answer()
-        await query.message.edit_text(
-            "✨ **Premium UI Emoji**\n\n"
-            "The provider panels use polished Unicode emoji for a premium look.\n"
-            "Telegram Premium custom/animated emoji require the actual custom-emoji IDs; they cannot be invented safely in source code."
-            ,
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]])
-        )
 
     # --- Admin OTP Group Test Wizard ---
     elif query.data == "test" and await is_admin(user_id):
@@ -1842,304 +1382,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await query.message.edit_text(balance_text, parse_mode="Markdown", reply_markup=keyboard)
 
-
-    # --- Legacy provider button aliases (kept for already-sent keyboards) ---
-    elif query.data in {"stex_control", "voltx_control", "zenex_control", "ye_control"} and await is_admin(user_id):
-        provider = {
-            "stex_control": "stex",
-            "voltx_control": "voltx",
-            "zenex_control": "zenex",
-            "ye_control": "yesms",
-        }[query.data]
-        await query.answer()
-        text, markup = await provider_panel_markup(provider)
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=markup)
-
-    # --- Dynamic Provider Control Panels ---
-    elif query.data == "provider_otp_info" and await is_admin(user_id):
-        await query.answer()
-        await query.message.edit_text(
-            "🛡️ **Authorized Provider OTP**\n\n"
-            "OTP delivery is accepted only from the configured provider webhook/API and is matched to an active order.\n\n"
-            "The bot does not read, intercept, or forward OTPs from unrelated Telegram chats or devices.",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_system_menu")]])
-        )
-
-    elif query.data.startswith("p_control:") and await is_admin(user_id):
-        provider = query.data.split(":", 1)[1]
-        if provider not in PROVIDERS:
-            await query.answer("❌ Unknown provider", show_alert=True)
-        else:
-            await query.answer()
-            text, markup = await provider_panel_markup(provider)
-            await query.message.edit_text(text, parse_mode="Markdown", reply_markup=markup)
-
-    elif query.data.startswith("p_baseurl:") and await is_admin(user_id):
-        provider = query.data.split(":", 1)[1]
-        if not provider_requires_base_url(provider):
-            await query.answer("This provider uses API Key only.", show_alert=True)
-        else:
-            PROVIDER_STATE[user_id] = {"step": "BASE_URL", "provider": provider}
-            await query.answer()
-            current_cfg = await provider_api_config(provider)
-            current = current_cfg.get("base_url") or "Not configured"
-            await query.message.edit_text(
-                f"🌐 **Set {provider_label(provider)} Base URL**\n\n"
-                f"Current: `{current}`\n\n"
-                "Send the provider Base URL.\n"
-                "Example: `https://example.com/@public/`\n\n"
-                "The number endpoint will use `/api/getnum` by default.",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"p_control:{provider}")]])
-            )
-
-    elif query.data.startswith("p_otpapi:") and await is_admin(user_id):
-        provider = query.data.split(":", 1)[1]
-        PROVIDER_STATE[user_id] = {"step": "OTP_API", "provider": provider}
-        await query.answer()
-        current_cfg = await provider_api_config(provider)
-        current = current_cfg.get("otp_api_url") or "Auto/default OTP API not available"
-        await query.message.edit_text(
-            f"🟣 **Set {provider_label(provider)} OTP API**\n\n"
-            f"Current: `{current}`\n\n"
-            "Send the complete OTP API URL.\n"
-            "Example: `https://example.com/@public/api/success-otp-info`\n\n"
-            "The bot will poll this endpoint using the saved API key and send matched OTPs to the configured OTP group.\n"
-            "Send `OFF` to disable custom OTP polling and use the provider default, if available.",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"p_control:{provider}")]])
-        )
-
-    elif query.data.startswith("p_keys:") and await is_admin(user_id):
-        provider = query.data.split(":", 1)[1]
-        keys = await provider_keys_col.find({"provider": provider}).sort("created_at", 1).to_list(length=100)
-        text = f"🔑 **{provider_label(provider)} API Keys**\n\nTotal API Keys: `{len(keys)}`\n"
-        keyboard = []
-        for index, key in enumerate(keys, 1):
-            keyboard.append([InlineKeyboardButton(
-                f"🔑 Key #{index}: {key.get('masked', '••••')}", callback_data="noop"
-            ), InlineKeyboardButton("🗑 Delete", callback_data=f"p_del_key:{provider}:{key['key_id']}")])
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data=f"p_control:{provider}")])
-        await query.answer()
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif query.data.startswith("p_add_key:") and await is_admin(user_id):
-        provider = query.data.split(":", 1)[1]
-        PROVIDER_STATE[user_id] = {"step": "API_KEY", "provider": provider}
-        await query.answer()
-        await query.message.edit_text(
-            f"🔑 **Send the new {provider_label(provider)} API Key:**\n\n"
-            "The key will be masked in the admin UI.",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"p_control:{provider}")]])
-        )
-
-    elif query.data.startswith("p_del_key:") and await is_admin(user_id):
-        _, provider, key_id = query.data.split(":", 2)
-        await query.answer()
-        await query.message.edit_text(
-            "⚠️ **Are you sure you want to delete this API key?**",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Confirm", callback_data=f"p_del_key_confirm:{provider}:{key_id}"), InlineKeyboardButton("❌ Cancel", callback_data=f"p_keys:{provider}")]
-            ])
-        )
-
-    elif query.data.startswith("p_del_key_confirm:") and await is_admin(user_id):
-        _, provider, key_id = query.data.split(":", 2)
-        await provider_keys_col.delete_one({"provider": provider, "key_id": key_id})
-        await query.answer("✅ API key deleted", show_alert=True)
-        keys = await provider_keys_col.find({"provider": provider}).sort("created_at", 1).to_list(length=100)
-        text = f"🔑 **{provider_label(provider)} API Keys**\n\nTotal API Keys: `{len(keys)}`\n"
-        keyboard = []
-        for index, key in enumerate(keys, 1):
-            keyboard.append([InlineKeyboardButton(f"🔑 Key #{index}: {key.get('masked', '••••')}", callback_data="noop"), InlineKeyboardButton("🗑 Delete", callback_data=f"p_del_key:{provider}:{key['key_id']}")])
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data=f"p_control:{provider}")])
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif query.data.startswith("p_services:") and await is_admin(user_id):
-        provider = query.data.split(":", 1)[1]
-        await query.answer()
-        text, markup = await provider_services_markup(provider)
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=markup)
-
-    elif query.data.startswith("p_add_service:") and await is_admin(user_id):
-        provider = query.data.split(":", 1)[1]
-        PROVIDER_STATE[user_id] = {"step": "SERVICE_NAME", "provider": provider}
-        await query.answer()
-        await query.message.edit_text(
-            "📝 **Enter Service Name (e.g. TELEGRAM):**",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"p_services:{provider}")]])
-        )
-
-    elif query.data.startswith("p_service:") and await is_admin(user_id):
-        _, provider, service_id = query.data.split(":", 2)
-        await query.answer()
-        text, markup = await provider_service_screen(provider, service_id)
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=markup)
-
-    elif query.data.startswith("p_del_service:") and await is_admin(user_id):
-        _, provider, service_id = query.data.split(":", 2)
-        await query.answer()
-        await query.message.edit_text(
-            "⚠️ **Delete this service and all of its countries/ranges?**",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Confirm", callback_data=f"p_del_service_confirm:{provider}:{service_id}"), InlineKeyboardButton("❌ Cancel", callback_data=f"p_service:{provider}:{service_id}")]])
-        )
-
-    elif query.data.startswith("p_del_service_confirm:") and await is_admin(user_id):
-        _, provider, service_id = query.data.split(":", 2)
-        await provider_ranges_col.delete_many({"provider": provider, "service_id": service_id})
-        await provider_countries_col.delete_many({"provider": provider, "service_id": service_id})
-        await provider_services_col.delete_one({"provider": provider, "service_id": service_id})
-        await query.answer("✅ Service deleted", show_alert=True)
-        text, markup = await provider_services_markup(provider)
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=markup)
-
-    elif query.data.startswith("p_add_country:") and await is_admin(user_id):
-        _, provider, service_id = query.data.split(":", 2)
-        PROVIDER_STATE[user_id] = {"step": "COUNTRY_NAME", "provider": provider, "service_id": service_id}
-        await query.answer()
-        await query.message.edit_text(
-            "🌍 **Enter Country Name:**",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"p_service:{provider}:{service_id}")]])
-        )
-
-    elif query.data.startswith("p_country:") and await is_admin(user_id):
-        _, provider, service_id, country_id = query.data.split(":", 3)
-        await query.answer()
-        text, markup = await provider_country_screen(provider, service_id, country_id)
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=markup)
-
-    elif query.data.startswith("p_del_country:") and await is_admin(user_id):
-        _, provider, service_id, country_id = query.data.split(":", 3)
-        await query.answer()
-        await query.message.edit_text(
-            "⚠️ **Delete this country and all configured ranges?**",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Confirm", callback_data=f"p_del_country_confirm:{provider}:{service_id}:{country_id}"), InlineKeyboardButton("❌ Cancel", callback_data=f"p_country:{provider}:{service_id}:{country_id}")]])
-        )
-
-    elif query.data.startswith("p_del_country_confirm:") and await is_admin(user_id):
-        _, provider, service_id, country_id = query.data.split(":", 3)
-        await provider_ranges_col.delete_many({"provider": provider, "service_id": service_id, "country_id": country_id})
-        await provider_countries_col.delete_one({"provider": provider, "country_id": country_id})
-        await query.answer("✅ Country deleted", show_alert=True)
-        text, markup = await provider_service_screen(provider, service_id)
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=markup)
-
-    elif query.data.startswith("p_add_range:") and await is_admin(user_id):
-        _, provider, service_id, country_id = query.data.split(":", 3)
-        country = await provider_countries_col.find_one({"provider": provider, "country_id": country_id})
-        country_name = country.get("name", "the selected country") if country else "the selected country"
-        PROVIDER_STATE[user_id] = {"step": "RANGE", "provider": provider, "service_id": service_id, "country_id": country_id}
-        await query.answer()
-        await query.message.edit_text(
-            f"📝 **Send the new Range for {country_name} (e.g. 26134):**",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"p_country:{provider}:{service_id}:{country_id}")]])
-        )
-
-    elif query.data.startswith("p_del_range:") and await is_admin(user_id):
-        _, provider, range_id = query.data.split(":", 2)
-        rng = await provider_ranges_col.find_one({"provider": provider, "range_id": range_id})
-        if not rng:
-            await query.answer("Range not found", show_alert=True)
-        else:
-            await provider_ranges_col.delete_one({"provider": provider, "range_id": range_id})
-            await query.answer("✅ Range deleted", show_alert=True)
-            text, markup = await provider_country_screen(provider, rng["service_id"], rng["country_id"])
-            await query.message.edit_text(text, parse_mode="Markdown", reply_markup=markup)
-
-    elif query.data.startswith("p_search:") and await is_admin(user_id):
-        provider = query.data.split(":", 1)[1]
-        PROVIDER_STATE[user_id] = {"step": "SEARCH_COUNTRY", "provider": provider}
-        await query.answer()
-        await query.message.edit_text(
-            f"🌐 **Search {provider_label(provider)} Country**\n\nSend a country name or part of it:",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"p_control:{provider}")]])
-        )
-
-    # --- Provider user-facing service/country/number flow ---
-    elif query.data.startswith("psel_serv:"):
-        _, provider, service_id = query.data.split(":", 2)
-        svc = await provider_services_col.find_one({"provider": provider, "service_id": service_id})
-        if not svc:
-            await query.answer("Service unavailable", show_alert=True)
-        else:
-            countries = await provider_countries_col.find({"provider": provider, "service_id": service_id}).sort("name", 1).to_list(length=200)
-            if not countries:
-                await query.answer("No countries configured", show_alert=True)
-            else:
-                await query.answer()
-                keyboard = [[InlineKeyboardButton(f"{c.get('flag', country_flag(c.get('code', 'UN')))} {c['name']}", callback_data=f"psel_country:{provider}:{service_id}:{c['country_id']}")] for c in countries]
-                keyboard.append([InlineKeyboardButton("🔙 Back to Services", callback_data="get_number_menu")])
-                await query.message.edit_text(f"🌍 **{svc['name']} — Select Country:**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif query.data.startswith("psel_country:"):
-        _, provider, service_id, country_id = query.data.split(":", 3)
-        svc = await provider_services_col.find_one({"provider": provider, "service_id": service_id})
-        country = await provider_countries_col.find_one({"provider": provider, "country_id": country_id})
-        ranges = await provider_ranges_col.find({"provider": provider, "service_id": service_id, "country_id": country_id}).to_list(length=500)
-        if not svc or not country or not ranges:
-            await query.answer("No ranges are configured for this country.", show_alert=True)
-        else:
-            key_docs = await provider_keys_col.find({"provider": provider}).to_list(length=100)
-            if not key_docs:
-                await query.answer("No API key is configured for this provider.", show_alert=True)
-            else:
-                await query.answer()
-                processing = await query.message.edit_text("⏳ Requesting an authorized number from the provider API...")
-                key_doc = random.choice(key_docs)
-                api_key = decrypt_api_key(key_doc.get("encrypted_key", ""))
-                rng = random.choice(ranges)
-                phone, external_order_id, err = await request_number_from_provider(provider, api_key, svc["name"], country["name"], rng["range"])
-                if not phone:
-                    await processing.edit_text(
-                        "❌ **Provider is currently unavailable.**\n\n"
-                        f"`{err or 'No number was returned.'}`",
-                        parse_mode="Markdown",
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Other Countries", callback_data=f"psel_serv:{provider}:{service_id}")]])
-                    )
-                else:
-                    order_id = await create_provider_order(
-                        user_id, provider,
-                        {"key_id": key_doc["key_id"]}, svc,
-                        {**country, "country_id": country["country_id"]}, rng, phone, external_order_id
-                    )
-                    await processing.edit_text(
-                        f"🌍 **{country['name']}** allocated for **{svc['name']}**\n\n"
-                        f"📞 Number: `{phone}`\n"
-                        f"🆔 Order: `#{order_id}`\n\n"
-                        "⏳ Waiting for an authorized provider OTP event...",
-                        parse_mode="Markdown",
-                        reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton(f"📲 📋 {phone}", copy_text=CopyTextButton(text=phone))],
-                            [InlineKeyboardButton("🌍 Other Countries", callback_data=f"psel_serv:{provider}:{service_id}")],
-                            [InlineKeyboardButton("🌐 OTP Group", url=OTP_GROUP_URL)],
-                        ])
-                    )
-
     elif query.data == "get_number_menu":
         await query.answer()
-        provider_service_docs = []
-        for provider in PROVIDERS:
-            svcs = await provider_services_col.find({"provider": provider}).sort("name", 1).to_list(length=200)
-            provider_service_docs.extend([(provider, svc) for svc in svcs])
         services = await numbers_col.distinct("service_name", {"status": "Available"})
-        keyboard = []
-        for provider, svc in provider_service_docs:
-            keyboard.append([InlineKeyboardButton(
-                f"{svc.get('emoji', service_emoji(svc['name']))} {svc['name']} • {provider_label(provider)[:1].upper()}",
-                callback_data=f"psel_serv:{provider}:{svc['service_id']}"
-            )])
-        for s in services:
-            keyboard.append([InlineKeyboardButton(f"📱 {s}", callback_data=f"sel_serv:{s}")])
-        if keyboard:
+        if services:
+            keyboard = [[InlineKeyboardButton(f"📱 {s}", callback_data=f"sel_serv:{s}")] for s in services]
             keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_main_menu")])
             reply_markup = InlineKeyboardMarkup(keyboard)
             text_msg = "📱 **Select a Service:**"
@@ -2288,14 +1535,134 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🌍 Other Countries", callback_data="get_number_menu")]] )
             )
 
-# --- Group listener intentionally does not inspect or forward OTPs. ---
-# OTP delivery is handled only by the authorized provider webhook/API above.
+# --- General Group Listener for OTP and RanaX Auto-Forwarding ---
 async def otp_group_listener(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return
+    message = update.message
+    if not message or not message.text:
+        return
+    
+    chat_id = str(message.chat_id)
+    text = message.text
+
+    # --- 1. RanaX External Source Forwarding System ---
+    ranax_status = await get_setting("ranax_status", "ON")
+    if ranax_status == "ON":
+        source_doc = await ranax_groups_col.find_one({"chat_id": chat_id})
+        if source_doc:
+            forward_groups = await forward_groups_col.find({}).to_list(length=50)
+            target_ids = [fg.get("group_id") for fg in forward_groups]
+            if not target_ids:
+                target_ids = [OTP_GROUP_URL]
+
+            for tid in target_ids:
+                try:
+                    await context.bot.send_message(
+                        chat_id=tid,
+                        text=f"🔄 **RanaX Auto-Forwarded OTP:**\n\n{text}",
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                    pass
+
+    # --- 2. Main Bot User Number Matcher System ---
+    current_otp_rate = float(await get_setting("otp_rate", 0.60))
+
+    async for assigned_doc in assigned_col.find({}):
+        phone = assigned_doc["phone_number"]
+        if phone in text:
+            user_id = assigned_doc["user_id"]
+            service = assigned_doc["service_name"]
+            
+            await numbers_col.update_one({"phone_number": phone}, {"$set": {"status": "Used"}})
+            
+            await users_col.update_one(
+                {"user_id": user_id},
+                {"$inc": {"balance": current_otp_rate, "total_earned": current_otp_rate}}
+            )
+            
+            user_msg = (
+                f"💬 #OTP_Received `{phone}`\n"
+                f"📥 **OTP Received!**\n\n"
+                f"💬 `{text}`\n\n"
+                f"💵 Added to Balance: `+{current_otp_rate}৳`"
+            )
+            
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"📱 {service}", callback_data="get_number_menu")]
+            ])
+            
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=user_msg,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard
+                )
+            except Exception:
+                pass
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text if update.message.text else ""
+
+    # --- Provider Control State ---
+    if await is_admin(user_id) and user_id in PROVIDER_STATE:
+        state = PROVIDER_STATE[user_id]
+        action = state.get("action")
+        provider = state.get("provider")
+
+        if action == "add_key":
+            if not text.strip():
+                await update.message.reply_text("❌ API key cannot be empty.")
+                return
+            await provider_keys_col.insert_one({"provider": provider, "api_key": text.strip(), "created_at": datetime.utcnow()})
+            del PROVIDER_STATE[user_id]
+            await update.message.reply_text(
+                f"✅ {provider} API key saved.\n\n⚠️ This build stores the key for configuration only; it does not automatically collect or forward verification OTPs.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Provider", callback_data=f"prov_panel:{provider}")]])
+            )
+            return
+
+        if action == "add_service":
+            name = text.strip().upper()
+            if not name:
+                await update.message.reply_text("❌ Service name cannot be empty.")
+                return
+            if await provider_services_col.find_one({"provider": provider, "name": name}):
+                await update.message.reply_text("⚠️ This service already exists. Enter another name.")
+                return
+            await provider_services_col.insert_one({"provider": provider, "name": name, "emoji": provider_service_emoji(name), "created_at": datetime.utcnow()})
+            del PROVIDER_STATE[user_id]
+            await update.message.reply_text(f"✅ Service {name} added.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Services", callback_data=f"prov_services:{provider}")]]))
+            return
+
+        if action == "add_country":
+            name = text.strip().title()
+            sid = state.get("service_id")
+            if not name or not sid:
+                await update.message.reply_text("❌ Invalid country data.")
+                return
+            if await provider_countries_col.find_one({"service_id": ObjectId(sid), "name": name}):
+                await update.message.reply_text("⚠️ This country already exists. Enter another name.")
+                return
+            await provider_countries_col.insert_one({"provider": provider, "service_id": ObjectId(sid), "name": name, "flag": provider_country_flag(name), "created_at": datetime.utcnow()})
+            del PROVIDER_STATE[user_id]
+            await update.message.reply_text(f"✅ Country {name} added.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Service", callback_data=f"prov_svc_mgmt:{provider}:{sid}")]]))
+            return
+
+        if action == "add_range":
+            value = text.strip()
+            cid = state.get("country_id")
+            if not value or not cid:
+                await update.message.reply_text("❌ Range cannot be empty.")
+                return
+            if await provider_ranges_col.find_one({"country_id": ObjectId(cid), "range_value": value}):
+                await update.message.reply_text("⚠️ This range already exists. Enter another range.")
+                return
+            await provider_ranges_col.insert_one({"provider": provider, "country_id": ObjectId(cid), "range_value": value, "created_at": datetime.utcnow()})
+            del PROVIDER_STATE[user_id]
+            await update.message.reply_text("✅ Range added.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Country", callback_data=f"prov_country_mgmt:{provider}:{cid}")]]))
+            return
 
     await users_col.update_one(
         {"user_id": user_id},
@@ -2336,174 +1703,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(inline_kb)
         )
         return
-
-    # --- Dynamic Provider Management State Handler ---
-    if await is_admin(user_id) and user_id in PROVIDER_STATE:
-        state = PROVIDER_STATE[user_id]
-        step = state.get("step")
-        provider = state.get("provider")
-
-        if step == "BASE_URL":
-            base_url = text.strip().rstrip("/")
-            if not re.match(r"^https?://[^\s]+$", base_url):
-                await update.message.reply_text(
-                    "❌ Invalid Base URL. Please send a complete http:// or https:// URL.",
-                    reply_markup=back_keyboard()
-                )
-                return
-            await provider_settings_col.update_one(
-                {"provider": provider},
-                {"$set": {
-                    "provider": provider,
-                    "base_url": base_url,
-                    "get_path": PROVIDERS.get(provider, {}).get("default_get_path", "/api/getnum"),
-                    "get_method": "POST",
-                    "updated_at": now_iso(),
-                }},
-                upsert=True
-            )
-            del PROVIDER_STATE[user_id]
-            await update.message.reply_text("✅ Base URL saved successfully.")
-            text_panel, markup = await provider_panel_markup(provider)
-            await update.message.reply_text(text_panel, parse_mode="Markdown", reply_markup=markup)
-            return
-
-        if step == "OTP_API":
-            otp_api_url = text.strip()
-            if otp_api_url.upper() == "OFF":
-                otp_api_url = ""
-            elif not re.match(r"^https?://[^\s]+$", otp_api_url):
-                await update.message.reply_text(
-                    "❌ Invalid OTP API URL. Send a complete http:// or https:// URL.",
-                    reply_markup=back_keyboard()
-                )
-                return
-            await provider_settings_col.update_one(
-                {"provider": provider},
-                {"$set": {
-                    "provider": provider,
-                    "otp_api_url": otp_api_url,
-                    "otp_method": "GET",
-                    "updated_at": now_iso(),
-                }},
-                upsert=True
-            )
-            del PROVIDER_STATE[user_id]
-            await update.message.reply_text(
-                "✅ OTP API saved successfully." if otp_api_url else "✅ Custom OTP API disabled.",
-                reply_markup=back_keyboard()
-            )
-            text_panel, markup = await provider_panel_markup(provider)
-            await update.message.reply_text(text_panel, parse_mode="Markdown", reply_markup=markup)
-            return
-
-        if step == "API_KEY":
-            api_key = text.strip()
-            if not api_key or len(api_key) > 512:
-                await update.message.reply_text("❌ Invalid API Key", reply_markup=back_keyboard())
-                return
-            valid = await validate_provider_key(provider, api_key)
-            if not valid:
-                await update.message.reply_text("❌ Invalid API Key", reply_markup=back_keyboard())
-                return
-            key_id = uuid4().hex[:8]
-            await provider_keys_col.insert_one({
-                "provider": provider, "key_id": key_id,
-                "encrypted_key": encrypt_api_key(api_key),
-                "masked": mask_secret(api_key), "created_at": now_iso()
-            })
-            del PROVIDER_STATE[user_id]
-            await update.message.reply_text("✅ API key saved successfully.")
-            text_panel, markup = await provider_panel_markup(provider)
-            await update.message.reply_text(text_panel, parse_mode="Markdown", reply_markup=markup)
-            return
-
-        if step == "SERVICE_NAME":
-            service = normalize_service(text)
-            if not service:
-                await update.message.reply_text("❌ Service name cannot be empty.", reply_markup=back_keyboard())
-                return
-            exists = await provider_services_col.find_one({"provider": provider, "name": service})
-            if exists:
-                await update.message.reply_text("⚠️ This service already exists.", reply_markup=back_keyboard())
-                return
-            service_id = uuid4().hex[:8]
-            await provider_services_col.insert_one({
-                "provider": provider, "service_id": service_id,
-                "name": service, "emoji": service_emoji(service), "created_at": now_iso()
-            })
-            del PROVIDER_STATE[user_id]
-            text_panel, markup = await provider_services_markup(provider)
-            await update.message.reply_text(text_panel, parse_mode="Markdown", reply_markup=markup)
-            return
-
-        if step == "COUNTRY_NAME":
-            country = normalize_country(text)
-            if not country:
-                await update.message.reply_text("❌ Country name cannot be empty.", reply_markup=back_keyboard())
-                return
-            exists = await provider_countries_col.find_one({"provider": provider, "service_id": state["service_id"], "name": country})
-            if exists:
-                await update.message.reply_text("⚠️ This country already exists for this service.", reply_markup=back_keyboard())
-                return
-            code = country_code_from_name(country)
-            country_id = uuid4().hex[:8]
-            await provider_countries_col.insert_one({
-                "provider": provider, "service_id": state["service_id"], "country_id": country_id,
-                "name": country, "code": code, "flag": country_flag(code), "created_at": now_iso()
-            })
-            service_id = state["service_id"]
-            del PROVIDER_STATE[user_id]
-            text_panel, markup = await provider_service_screen(provider, service_id)
-            await update.message.reply_text(text_panel, parse_mode="Markdown", reply_markup=markup)
-            return
-
-        if step == "RANGE":
-            range_value = normalize_range(text)
-            if not range_value or not re.search(r"\d", range_value):
-                await update.message.reply_text("❌ Invalid range.", reply_markup=back_keyboard())
-                return
-            exists = await provider_ranges_col.find_one({
-                "provider": provider, "service_id": state["service_id"],
-                "country_id": state["country_id"], "range": range_value
-            })
-            if exists:
-                await update.message.reply_text("⚠️ This range already exists.", reply_markup=back_keyboard())
-                return
-            range_id = uuid4().hex[:8]
-            await provider_ranges_col.insert_one({
-                "provider": provider, "service_id": state["service_id"],
-                "country_id": state["country_id"], "range_id": range_id,
-                "range": range_value, "created_at": now_iso()
-            })
-            service_id, country_id = state["service_id"], state["country_id"]
-            del PROVIDER_STATE[user_id]
-            text_panel, markup = await provider_country_screen(provider, service_id, country_id)
-            await update.message.reply_text(text_panel, parse_mode="Markdown", reply_markup=markup)
-            return
-
-        if step == "SEARCH_COUNTRY":
-            query_text = normalize_name(text).lower()
-            del PROVIDER_STATE[user_id]
-            matches = await provider_countries_col.find({
-                "provider": provider,
-                "name": {"$regex": re.escape(query_text), "$options": "i"}
-            }).to_list(length=100)
-            if not matches:
-                await update.message.reply_text("⚠️ No configured countries matched your search.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=f"p_control:{provider}")]]))
-                return
-            keyboard = []
-            for c in matches:
-                keyboard.append([InlineKeyboardButton(
-                    f"{c.get('flag', '🌍')} {c['name']}",
-                    callback_data=f"p_country:{provider}:{c['service_id']}:{c['country_id']}"
-                )])
-            keyboard.append([InlineKeyboardButton("🔙 Back", callback_data=f"p_control:{provider}")])
-            await update.message.reply_text(
-                f"🌐 **{provider_label(provider)} Country Search**\n\nResults for `{query_text}`:",
-                parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            return
 
     # --- Admin OTP Group Test State Handler (Without TEST indicator) ---
     if await is_admin(user_id) and user_id in TEST_STATE:
@@ -3090,24 +2289,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
         
     elif text == btn_get_num:
-        provider_service_docs = []
-        for provider in PROVIDERS:
-            svcs = await provider_services_col.find({"provider": provider}).sort("name", 1).to_list(length=200)
-            provider_service_docs.extend([(provider, svc) for svc in svcs])
         services = await numbers_col.distinct("service_name", {"status": "Available"})
-        keyboard = []
-        for provider, svc in provider_service_docs:
-            keyboard.append([InlineKeyboardButton(
-                f"{svc.get('emoji', service_emoji(svc['name']))} {svc['name']} • {provider_label(provider)}",
-                callback_data=f"psel_serv:{provider}:{svc['service_id']}"
-            )])
-        for s in services:
-            keyboard.append([InlineKeyboardButton(f"📱 {s}", callback_data=f"sel_serv:{s}")])
-        if keyboard:
+        if services:
+            keyboard = [[InlineKeyboardButton(f"📱 {s}", callback_data=f"sel_serv:{s}")] for s in services]
             keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_main_menu")])
             await update.message.reply_text("📱 **Select a Service:**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
         else:
-            await update.message.reply_text("⚠️ No services are configured.", parse_mode="Markdown")
+            await update.message.reply_text("⚠️ বর্তমানে কোনো নাম্বার স্টক এ নেই!", parse_mode="Markdown")
         
     elif text == btn_search_num:
         USER_SEARCH_STATE[user_id] = True
@@ -3175,7 +2363,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         if await is_admin(user_id) and text == "":
             pass
-        elif not update.message.document and not any(user_id in d for d in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_STATE, PROVIDER_STATE]):
+        elif not update.message.document and not any(user_id in d for d in [ADMIN_UPLOAD_STATE, USER_SEARCH_STATE, ADMIN_SETTINGS_STATE, USER_WITHDRAW_STATE, ADMIN_BROADCAST_STATE, ADMIN_ADD_STATE, CHANNEL_ADD_STATE, FORWARD_GROUP_ADD_STATE, USER_MANAGE_STATE, RANAX_ADD_STATE, MENU_EDIT_STATE, TEST_STATE]):
             reply_markup = await build_main_menu(user_id)
             await update.message.reply_text("দয়া করে নিচের বাটনগুলো ব্যবহার করুন অথবা /start দিন।", reply_markup=reply_markup)
 
@@ -3207,31 +2395,22 @@ async def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     application.add_handler(MessageHandler(filters.Document.ALL, message_handler))
     
-    # OTP delivery is webhook/API driven and never reads arbitrary group messages.
-    print("Zentrix Bot with authorized multi-provider management is starting...")
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, otp_group_listener))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.SUPERGROUP, otp_group_listener))
+
+    print("Zentrix Bot with RanaX Auto-Forwarder and Menu Customizer is running successfully...")
     
     async def main_runner():
         await application.initialize()
         await application.start()
         await application.updater.start_polling()
-        start_provider_webhook_server(application.bot)
-        otp_poll_task = asyncio.create_task(poll_provider_otp_apis(application.bot))
         stop_signal = asyncio.Event()
-        try:
-            await stop_signal.wait()
-        finally:
-            otp_poll_task.cancel()
-            try:
-                await otp_poll_task
-            except asyncio.CancelledError:
-                pass
+        await stop_signal.wait()
 
     try:
         await main_runner()
     except (KeyboardInterrupt, RuntimeError):
         pass
-    finally:
-        stop_provider_webhook_server()
 
 if __name__ == "__main__":
     asyncio.run(main())
