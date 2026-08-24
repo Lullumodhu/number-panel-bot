@@ -539,10 +539,15 @@ async def request_number_from_provider(provider: str, api_key: str, service: str
     )
     url = cfg["base_url"] + "/" + path.lstrip("/")
 
-    # Fast X API Test accepts ONLY the range field. Sending service/country
-    # here is not necessary and can break providers that validate the body.
+    # Fast X API Test accepts ONLY the range field, and its documented
+    # format is a prefix followed by exactly three X characters (for example
+    # 26134XXX). Admins can enter either 26134 or 26134XXX in the panel;
+    # normalize it here so the provider always receives the documented form.
     if provider == "fastx":
-        payload = {"range": range_value}
+        fastx_range = re.sub(r"\s+", "", str(range_value or ""))
+        if not re.search(r"XXX$", fastx_range, re.IGNORECASE):
+            fastx_range = fastx_range.rstrip("Xx") + "XXX"
+        payload = {"range": fastx_range}
     else:
         payload = {"service": service, "country": country, "range": range_value}
 
@@ -1916,7 +1921,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         PROVIDER_STATE[user_id] = {"step": "RANGE", "provider": provider, "service_id": service_id, "country_id": country_id}
         await query.answer()
         await query.message.edit_text(
-            f"📝 **Send the new Range for {country_name} (e.g. 26134):**",
+            f"📝 **Send the new Range for {country_name} (e.g. 26134 or 26134XXX):**",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"p_country:{provider}:{service_id}:{country_id}")]])
         )
@@ -2312,6 +2317,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not range_value or not re.search(r"\d", range_value):
                 await update.message.reply_text("❌ Invalid range.", reply_markup=back_keyboard())
                 return
+
+            # Fast X panel documents the Get Number range as PREFIX + XXX.
+            # Store the normalized form so the user-facing service/country/range
+            # configuration and the actual API request use the same value.
+            if provider == "fastx" and not re.search(r"XXX$", range_value, re.IGNORECASE):
+                range_value = range_value.rstrip("Xx") + "XXX"
             exists = await provider_ranges_col.find_one({
                 "provider": provider, "service_id": state["service_id"],
                 "country_id": state["country_id"], "range": range_value
