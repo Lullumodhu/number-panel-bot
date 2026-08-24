@@ -132,7 +132,7 @@ async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # --- Reply Keyboards ---
 async def main_menu_keyboard(user_id: int):
-    btn_get_num = await get_setting("btn_get_number", "📱 GET NUMBER","style" => "primary"])
+    btn_get_num = await get_setting("btn_get_number", "📱 GET NUMBER")
     btn_search_num = await get_setting("btn_search_number", "🔎 SEARCH NUMBER")
     btn_traffic = await get_setting("btn_traffic", "🚦 TRAFFIC")
     btn_refer = await get_setting("btn_refer", "👥 REFERRAL")
